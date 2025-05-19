@@ -13,3 +13,5 @@ src/backend/.env
 
 .venv/
 *.log
+.vscode/
+.cursor/
