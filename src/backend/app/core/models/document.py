@@ -6,7 +6,6 @@ import uuid
 from sqlmodel import Field, SQLModel, Relationship
 from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey
 
-# Import directly - this should work with the Python path set in main.py
 from app.core.config.constants import DocumentSourceType, DocumentStatus
 
 # Forward reference for circular imports

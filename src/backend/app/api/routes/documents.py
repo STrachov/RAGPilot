@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlmodel import select, desc, update
+import logging
 
 from app.api.deps import CurrentUser, SessionDep, get_user_with_permission
 from app.core.models.document import Document, DocumentChunk
@@ -12,18 +13,19 @@ from app.core.config.constants import DocumentSourceType, DocumentStatus, Chunki
 from app.core.config.settings import settings
 from app.core.models.user import User
 from app.core.services.s3 import s3_service
+from app.core.services.document_processor import document_processor
 
 router = APIRouter()
 
 # Permission-based dependencies
 def require_document_upload_permission(current_user: Annotated[User, Depends()]) -> User:
-    return get_user_with_permission("document:upload")(current_user)
+    return get_user_with_permission("documents:create")(current_user)
 
 def require_document_delete_permission(current_user: Annotated[User, Depends()]) -> User:
-    return get_user_with_permission("document:delete")(current_user)
+    return get_user_with_permission("documents:delete")(current_user)
 
 def require_document_read_permission(current_user: Annotated[User, Depends()]) -> User:
-    return get_user_with_permission("document:read")(current_user)
+    return get_user_with_permission("documents:read")(current_user)
 
 
 @router.get("/", response_model=List[Document])
@@ -55,7 +57,7 @@ async def get_document(
     session: SessionDep,
 ) -> Any:
     """Get a specific document by ID"""
-    document = session.get(Document, document_id)
+    document = session.get(Document, str(document_id))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     return document
@@ -68,53 +70,24 @@ async def process_document_async(
     """
     Async background task to process a document
     
-    In a production environment, this would:
-    1. Update status to PROCESSING
-    2. Download from S3 if needed
-    3. Process the document (chunk, extract text, etc.)
-    4. Create document chunks
-    5. Generate embeddings
-    6. Store embeddings in vector DB
-    7. Update status to INDEXED or FAILED
+    This will:
+    1. Download the document from S3
+    2. Extract text using Docling
+    3. Create chunks based on the configured strategy
+    4. Update document status
     """
-    # This is a placeholder - in production you'd implement full processing logic
-    # or integrate with a task queue like Celery
-    
-    # Update status to PROCESSING
-    document = session.get(Document, document_id)
+    # Get document
+    document = session.get(Document, str(document_id))
     if not document:
         return
     
-    document.status = DocumentStatus.PROCESSING
-    document.updated_at = datetime.now(timezone.utc)
-    session.add(document)
-    session.commit()
-    
-    # Simulate processing delay and success
-    # In production, replace with actual document processing
     try:
-        # Simulated successful processing
-        document.status = DocumentStatus.INDEXED  
-        document.processed_at = datetime.now(timezone.utc)
-        document.updated_at = datetime.now(timezone.utc)
-        
-        # Create a sample chunk (in production, you'd create real chunks)
-        chunk = DocumentChunk(
-            document_id=document.id,
-            content="Sample document content...",
-            chunk_index=0,
-            metadata={
-                "strategy": ChunkingStrategy.PARAGRAPH,
-                "page": 1
-            }
-        )
-        session.add(chunk)
-        
-        # Update the document
-        session.add(document)
-        session.commit()
-    except Exception:
-        # Update status to FAILED on any error
+        # Process document with Docling
+        await document_processor.process_document(document, session)
+    except Exception as e:
+        # Log the error and update status
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error processing document {document_id}: {e}")
         document.status = DocumentStatus.FAILED
         document.updated_at = datetime.now(timezone.utc)
         session.add(document)
@@ -156,7 +129,7 @@ async def upload_document(
     
     # Create document record with pending status
     document = Document(
-        id=document_id,
+        id=str(document_id),
         filename=file.filename,
         title=title or file.filename,
         source_type=source_type,
@@ -165,11 +138,13 @@ async def upload_document(
         content_type=file.content_type,
         file_size=len(content),
         status=DocumentStatus.PENDING,
-        metadata={
-            "uploaded_by": str(current_user.id),
-            "original_filename": file.filename
-        }
     )
+    
+    # Set metadata using the proper property
+    document.metadata_dict = {
+        "uploaded_by": str(current_user.id),
+        "original_filename": file.filename
+    }
     
     # Upload to S3
     file.file.seek(0)  # Reset file pointer to beginning
@@ -198,7 +173,7 @@ async def upload_document(
     # Start background processing
     background_tasks.add_task(
         process_document_async,
-        document_id=document.id,
+        document_id=document_id,
         session=session
     )
     
@@ -212,7 +187,7 @@ async def delete_document(
     session: SessionDep,
 ) -> Any:
     """Delete a document and its chunks"""
-    document = session.get(Document, document_id)
+    document = session.get(Document, str(document_id))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     
@@ -224,7 +199,7 @@ async def delete_document(
         pass
     
     # Delete associated chunks
-    chunks_query = select(DocumentChunk).where(DocumentChunk.document_id == document_id)
+    chunks_query = select(DocumentChunk).where(DocumentChunk.document_id == str(document_id))
     chunks = session.exec(chunks_query).all()
     for chunk in chunks:
         session.delete(chunk)
@@ -243,13 +218,23 @@ async def get_document_chunks(
     session: SessionDep,
     skip: int = 0,
     limit: int = 100,
+    chunk_type: Optional[str] = Query(None, description="Filter by chunk type (text, table)"),
 ) -> Any:
-    """Get chunks for a specific document"""
-    document = session.get(Document, document_id)
+    """Get chunks for a specific document with optional filtering by type"""
+    document = session.get(Document, str(document_id))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    query = select(DocumentChunk).where(DocumentChunk.document_id == document_id).offset(skip).limit(limit)
+    # Base query
+    query = select(DocumentChunk).where(DocumentChunk.document_id == str(document_id))
+    
+    # Apply chunk type filter if provided
+    if chunk_type:
+        query = query.where(DocumentChunk.metadata_json.contains(f'"type": "{chunk_type}"'))
+    
+    # Apply pagination
+    query = query.offset(skip).limit(limit)
+    
     chunks = session.exec(query).all()
     return chunks
 
@@ -262,7 +247,7 @@ async def get_document_download_url(
     expiration: int = Query(3600, description="URL expiration time in seconds"),
 ) -> Any:
     """Generate a pre-signed URL for downloading the document"""
-    document = session.get(Document, document_id)
+    document = session.get(Document, str(document_id))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     
@@ -288,7 +273,7 @@ async def update_document(
     source_name: Optional[str] = Form(None),
 ) -> Any:
     """Update document metadata"""
-    document = session.get(Document, document_id)
+    document = session.get(Document, str(document_id))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     

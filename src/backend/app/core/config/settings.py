@@ -77,11 +77,11 @@ class Settings(BaseSettings):
     EMAILS_FROM_NAME: Optional[str] = None
     
     # S3 storage settings
-    S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "ragpilot-documents")
-    S3_ACCESS_KEY: str = os.getenv("S3_ACCESS_KEY", "")
-    S3_SECRET_KEY: str = os.getenv("S3_SECRET_KEY", "")
-    S3_REGION: str = os.getenv("S3_REGION", "us-east-1")
-    S3_ENDPOINT_URL: Optional[str] = os.getenv("S3_ENDPOINT_URL", None)
+    S3_BUCKET_NAME: str 
+    S3_ACCESS_KEY: str
+    S3_SECRET_KEY: str
+    S3_REGION: str
+    S3_ENDPOINT_URL: Optional[str] 
     
     # File upload settings
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "uploads")
