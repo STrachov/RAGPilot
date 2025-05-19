@@ -1,0 +1,13 @@
+RAGPilot – Intelligent Document QA Platform for Enterprise Knowledge
+Brief description
+RAGPilot is a cost-efficient, production-ready system that transforms unstructured documents—such as PDFs, emails, reports, and SharePoint files—into a searchable knowledge base powered by Retrieval-Augmented Generation (RAG). It enables employees to ask natural language questions and receive accurate, source-linked answers through a secure, streaming chatbot interface. Built with a FastAPI backend and a Next.js admin panel, RAGPilot offers advanced hybrid retrieval, graph integration, customizable pipelines, and full observability for enterprise-scale deployment.
+Iterative rollout plan for the admin panel
+Iteration 1 – MVP (“Docs in, Answers out”)
+Start with the essential features to allow document ingestion, indexing, model configuration, and basic system monitoring:
+•	Dashboard: Overview
+•	Documents: Sources, Uploads
+•	Pipeline: Chunking, Embeddings, Indexes
+•	Retrieval: Hybrid
+•	LLM & Prompts: Models, Prompts
+•	Monitoring: Traces
+•	Settings: Environment

@@ -1,0 +1,213 @@
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "./nginx.conf:/etc/nginx/nginx.conf"
+      - "./frontend:/usr/share/nginx/html"
+      - "./ssl:/etc/nginx/ssl"
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - app_network
+
+  pg:
+    image: postgres:12
+    env_file:
+      - ./backend/.env
+    environment:
+      - PGDATA=/var/lib/postgresql/data/pgdata
+      - POSTGRES_SERVER=${POSTGRES_SERVER?Variable not set}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD?Variable not set}
+      - POSTGRES_USER=${POSTGRES_USER?Variable not set}
+      - POSTGRES_DB=${POSTGRES_DB?Variable not set}
+    ports:
+      - "${POSTGRES_PORT?Variable not set}:5432"
+    volumes:
+      - ./backend/data/pgdata:/var/lib/postgresql/data/pgdata
+    networks:
+      - app_network
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./backend/data/qdrant:/qdrant/storage
+    networks:
+      - app_network
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.11
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      - CLICKHOUSE_DB=langfuse
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+      - CLICKHOUSE_PASSWORD=password
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    networks:
+      - app_network
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass ${REDIS_PASSWORD:-password}
+    volumes:
+      - redis_data:/data
+    networks:
+      - app_network
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-langfuseadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-password}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - app_network
+
+  create-buckets:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c '
+      sleep 5;
+      /usr/bin/mc config host add myminio http://minio:9000 ${MINIO_ROOT_USER:-langfuseadmin} ${MINIO_ROOT_PASSWORD:-password} --api s3v4;
+      /usr/bin/mc mb myminio/langfuse-events;
+      /usr/bin/mc mb myminio/langfuse-media;
+      /usr/bin/mc mb myminio/langfuse-exports;
+      exit 0;
+      '
+    networks:
+      - app_network
+
+  langfuse:
+    image: langfuse/langfuse:v3-latest
+    ports:
+      - "3000:3000"
+    environment:
+      - POSTGRES_SERVER=pg
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER?Variable not set}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD?Variable not set}
+      - POSTGRES_DB=${POSTGRES_DB?Variable not set}
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pg:5432/${POSTGRES_DB}
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=9000
+      - CLICKHOUSE_PASSWORD=password
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_DATABASE=langfuse
+      - CLICKHOUSE_PROTOCOL=native
+      - CLICKHOUSE_URL=http://clickhouse:8123
+      - CLICKHOUSE_MIGRATION_URL=clickhouse://clickhouse:9000
+      - REDIS_CONNECTION_STRING=redis://:${REDIS_PASSWORD:-password}@redis:6379
+      - LANGFUSE_S3_EVENT_UPLOAD_BUCKET=langfuse-events
+      - LANGFUSE_S3_MEDIA_UPLOAD_BUCKET=langfuse-media
+      - LANGFUSE_S3_BATCH_EXPORT_BUCKET=langfuse-exports
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=${MINIO_ROOT_USER:-langfuseadmin}
+      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-password}
+      - NEXTAUTH_SECRET=${LANGFUSE_AUTH_SECRET:-defaultsecret}
+      - SALT=${LANGFUSE_SALT:-defaultsalt}
+    depends_on:
+      - pg
+      - clickhouse
+      - redis
+      - minio
+      - create-buckets
+    networks:
+      - app_network
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:v3-latest
+    environment:
+      - POSTGRES_SERVER=pg
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER?Variable not set}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD?Variable not set}
+      - POSTGRES_DB=${POSTGRES_DB?Variable not set}
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pg:5432/${POSTGRES_DB}
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=9000
+      - CLICKHOUSE_PASSWORD=password
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_DATABASE=langfuse
+      - CLICKHOUSE_PROTOCOL=native
+      - CLICKHOUSE_URL=http://clickhouse:8123
+      - CLICKHOUSE_MIGRATION_URL=clickhouse://clickhouse:9000
+      - REDIS_CONNECTION_STRING=redis://:${REDIS_PASSWORD:-password}@redis:6379
+      - LANGFUSE_S3_EVENT_UPLOAD_BUCKET=langfuse-events
+      - LANGFUSE_S3_MEDIA_UPLOAD_BUCKET=langfuse-media
+      - LANGFUSE_S3_BATCH_EXPORT_BUCKET=langfuse-exports
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=${MINIO_ROOT_USER:-langfuseadmin}
+      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-password}
+      - NEXTAUTH_SECRET=${LANGFUSE_AUTH_SECRET:-defaultsecret}
+      - SALT=${LANGFUSE_SALT:-defaultsalt}
+    depends_on:
+      - pg
+      - clickhouse
+      - redis
+      - minio
+      - create-buckets
+    networks:
+      - app_network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    container_name: fastapi-backend
+    env_file:
+      - ./backend/.env
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - LANGFUSE_HOST=langfuse
+      - LANGFUSE_PORT=3000
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+    depends_on:
+      - pg
+      - qdrant
+      - langfuse
+    networks:
+      - app_network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "81:80"
+    container_name: nginx-frontend
+    depends_on:
+      - backend
+    networks:
+      - app_network
+
+volumes:
+  qdrant_data:
+  clickhouse_data:
+  redis_data:
+  minio_data:
+
+networks:
+  app_network:
