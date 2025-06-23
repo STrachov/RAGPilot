@@ -4,7 +4,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlalchemy.pool import StaticPool
 import sys
 import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../src/backend")))
+#sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../src/backend")))
 from app.core.models.user import User
 from app.core.config.constants import UserRole
 from app.main import app

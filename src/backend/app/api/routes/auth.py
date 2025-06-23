@@ -12,7 +12,7 @@ from app.core import security
 from app.core.config.settings import settings
 from app.core.config.constants import UserRole
 from app.core.models.refresh_token import RefreshToken
-from app.core.models.user import Token, UserPublic, User, UserRegister, UpdatePassword
+from app.core.models.user import Token, UserPublic, User, UserRegister, UpdatePassword, RefreshTokenRequest
 from app.core.security import get_password_hash, verify_password, create_access_token
 from app.core.logger import auth_logger
 
@@ -76,6 +76,7 @@ async def login(
     return Token(
         access_token=access_token,
         token_type="bearer",
+        refresh_token=refresh_token_value,
         message="Successfully logged in",
         role=user.role,
         permissions=list(user.permissions)
@@ -135,7 +136,7 @@ async def login_web(
 
 @router.post("/refresh", response_model=Token)
 async def refresh_token_api(
-    refresh_token: str, 
+    request: RefreshTokenRequest,
     db: SessionDep
 ):
     """Get a new access token using a refresh token"""
@@ -144,7 +145,7 @@ async def refresh_token_api(
     # Find the refresh token in the database
     token_record = db.exec(
         select(RefreshToken).where(
-            RefreshToken.token == refresh_token,
+            RefreshToken.token == request.refresh_token,
             RefreshToken.revoked == False,
             RefreshToken.expires_at > datetime.now(timezone.utc)
         )

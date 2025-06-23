@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional, Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from datetime import datetime, timezone, timedelta
 
 from app.api.deps import CurrentUser, SessionDep, get_user_with_permission
 from app.core.config.constants import (
@@ -18,23 +19,14 @@ from app.core.config.constants import (
 )
 
 router = APIRouter()
-
+   
 # Admin-only dependency
 def require_admin_permission(current_user: CurrentUser) -> CurrentUser:
-    if not current_user.has_permission("config:read"):
-        raise HTTPException(
-            status_code=403,
-            detail="Not enough permissions to access this resource"
-        )
-    return current_user
+    return get_user_with_permission("config:read")(current_user)
 
 def require_admin_write_permission(current_user: CurrentUser) -> CurrentUser:
-    if not current_user.has_permission("config:write"):
-        raise HTTPException(
-            status_code=403,
-            detail="Not enough permissions to modify this resource"
-        )
-    return current_user
+    return get_user_with_permission("config:write")(current_user)
+
 
 # Create annotated types for the dependencies
 AdminUser = Annotated[CurrentUser, Depends(require_admin_permission)]
@@ -53,16 +45,40 @@ class SystemStats(BaseModel):
 @router.get("/stats", response_model=SystemStats)
 async def get_system_stats(
     current_user: AdminUser,
+    session: SessionDep,
 ) -> Any:
     """Get system statistics for admin dashboard"""
-    # In a real implementation, you would query the database for these statistics
-    # For now, we'll return dummy data
+    from sqlmodel import select, func
+    from app.core.models.document import Document
+    from app.core.models.user import User
+    from app.core.services.s3 import s3_service
+    
+    # Get total documents
+    total_documents = session.exec(select(func.count(Document.id))).first() or 0
+    
+    # Get total chunks
+    #total_chunks = session.exec(select(func.count(DocumentChunk.id))).first() or 0
+    
+    # Get active users (users with is_active=True)
+    active_users = session.exec(
+        select(func.count(User.id))
+        .where(User.is_active == True)
+    ).first() or 0
+    
+    # Calculate total storage used from documents
+    total_storage = session.exec(
+        select(func.sum(Document.file_size))
+    ).first() or 0
+    
+    # Convert bytes to MB
+    storage_used_mb = round(total_storage / (1024 * 1024), 2)
+    
     return SystemStats(
-        total_documents=42,
-        total_chunks=1024,
-        total_queries=156,
-        active_users=7,
-        storage_used_mb=125.4
+        total_documents=total_documents,
+        total_chunks=26, # TODO: Implement total chunks
+        total_queries=156,  # TODO: Implement query tracking
+        active_users=active_users,
+        storage_used_mb=storage_used_mb
     )
 
 

@@ -88,17 +88,27 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE: int = int(os.getenv("MAX_UPLOAD_SIZE", "100000000"))  # 100MB
     ALLOWED_DOCUMENT_TYPES: Set[str] = {
         "application/pdf",
+        "application/msword",  # doc
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # docx
         "text/plain",
         "text/markdown",
         "text/csv",
         "application/json",
+        "application/vnd.ms-excel",  # xls
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # xlsx
+        "application/epub+zip",  # epub
     }
     FILE_UPLOAD_TIMEOUT: int = int(os.getenv("FILE_UPLOAD_TIMEOUT", "300"))  # 5 minutes
     
     # Task queue settings
     USE_REDIS: bool = os.getenv("USE_REDIS", "False").lower() == "true"
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    
+    # RAGParser microservice settings
+    RAGPARSER_BASE_URL: str = os.getenv("RAGPARSER_BASE_URL", "http://localhost:8001")
+    RAGPARSER_TIMEOUT: int = int(os.getenv("RAGPARSER_TIMEOUT", "300"))  # 5 minutes
+    RAGPARSER_API_KEY: Optional[str] = os.getenv("RAGPARSER_API_KEY", None)
+    UNKNOWN_VALUE: str = "unknown"
     
     # Docker settings
     DOCKER_IMAGE_BACKEND: str = "backend"

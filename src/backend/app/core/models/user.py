@@ -161,9 +161,15 @@ class Message(SQLModel):
 class Token(SQLModel):
     access_token: str
     token_type: str = "bearer"
+    refresh_token: Optional[str] = None
     message: Optional[str] = None
     role: str = UserRole.USER.value
     permissions: List[str] = []
+
+
+# Request model for refresh token
+class RefreshTokenRequest(SQLModel):
+    refresh_token: str
 
 
 # Contents of JWT token

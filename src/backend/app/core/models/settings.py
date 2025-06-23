@@ -1,7 +1,9 @@
 from datetime import datetime
 from enum import Enum
 from typing import Optional, Dict, Any
+import uuid
 from sqlmodel import SQLModel, Field
+from sqlalchemy import Column, String, Text, Boolean, DateTime
 
 
 class SettingType(str, Enum):
@@ -13,17 +15,22 @@ class SettingType(str, Enum):
     ENVIRONMENT = "environment"
 
 
-class Setting(SQLModel):
+class Setting(SQLModel, table=True):
     """Model for system settings"""
-    id: Optional[str] = None
-    key: str
-    value: Any
-    type: SettingType
-    description: Optional[str] = None
-    is_secret: bool = False
-    is_editable: bool = True
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: Optional[datetime] = None
+    __tablename__ = "settings"
+    
+    id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=Column(String(36), primary_key=True)
+    )
+    key: str = Field(sa_column=Column(String(255), unique=True, index=True))
+    value: str = Field(sa_column=Column(Text))  # Store as JSON string
+    type: str = Field(sa_column=Column(String(50)))
+    description: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    is_secret: bool = Field(default=False, sa_column=Column(Boolean))
+    is_editable: bool = Field(default=True, sa_column=Column(Boolean))
+    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime))
+    updated_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime, nullable=True))
 
 
 class Environment(SQLModel):

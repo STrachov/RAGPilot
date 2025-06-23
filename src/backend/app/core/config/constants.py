@@ -21,6 +21,8 @@ ROLE_PERMISSIONS: Dict[UserRole, Set[str]] = {
         "system:settings", "system:logs", "system:metrics",
         # Chat permissions
         "chat:create", "chat:read", "chat:delete", "chat:advanced",
+        # Config permissions
+        "config:read", "config:write",
     },
     UserRole.USER: {
         # Document permissions
@@ -49,10 +51,28 @@ class DocumentSourceType(str, Enum):
 
 class DocumentStatus(str, Enum):
     """Processing status of a document"""
-    PENDING = "pending"
-    PROCESSING = "processing"
-    INDEXED = "indexed"
-    FAILED = "failed"
+    PENDING = "pending"           # Document uploaded, waiting to start processing
+    PARSING = "parsing"          # Document sent to RAGParser for parsing
+    PARSED = "parsed"            # Document parsing completed
+    CHUNKING = "chunking"        # Document being chunked
+    INDEXING = "indexing"        # Document chunks being indexed
+    COMPLETED = "completed"      # All processing completed successfully
+    FAILED = "failed"            # Processing failed at any stage
+
+
+class ProcessingStage(str, Enum):
+    """Document processing stages"""
+    UPLOAD = "upload"           # File upload to S3
+    PARSE = "parse"             # Extract text from document using Docling/RAGParser
+    CHUNK_INDEX = "chunk-index" # Split parsed text into chunks and create vector index
+
+
+class StageStatus(str, Enum):
+    """Status of individual processing stages"""
+    WAITING = "waiting"     # Stage is waiting to be started
+    RUNNING = "running"     # Stage is currently processing
+    COMPLETED = "completed" # Stage completed successfully
+    FAILED = "failed"       # Stage failed with error
 
 
 class ChunkingStrategy(str, Enum):
@@ -150,6 +170,28 @@ Answer:""",
 {text}
 
 Summary:"""
+}
+
+# Default stage configurations
+DEFAULT_STAGE_CONFIGS = {
+    "parse": {
+        "do_ocr": True,
+        "extract_tables": True,
+        "extract_images": False,
+        "ocr_language": "en"
+    },
+    "chunk-index": {
+        # Chunking configuration
+        "chunk_strategy": ChunkingStrategy.PARAGRAPH,
+        "chunk_size": 1000,
+        "chunk_overlap": 200,
+        # Indexing configuration
+        "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+        "model_type": EmbeddingModel.SENTENCE_TRANSFORMERS,
+        "dimensions": 384,
+        "index_type": IndexType.FAISS,
+        "similarity_metric": "cosine"
+    }
 }
 
 # Document processing constants
