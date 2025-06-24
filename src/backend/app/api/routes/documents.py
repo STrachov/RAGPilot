@@ -123,37 +123,30 @@ async def upload_document(
         title=title or os.path.splitext(file.filename)[0],
         source_type=source_type,
         source_name=source_name,
-        file_path=s3_key,
+        file_path=s3_key,  # Will be set by upload stage
         content_type=file.content_type,
         file_size=len(file_content),
         binary_hash=binary_hash,
     )
     
-    from datetime import datetime, timezone
-    
-    # Set initial parse status based on whether we're starting the pipeline immediately
-    parse_status = "running" if run_pipeline else "waiting"
-    parse_stage_data = {
-        "status": parse_status,
-        "config": {
-            "do_ocr": True,
-            "do_table_structure": True,
-            "ocr_language": "en"
-        }
-    }
-    if run_pipeline:
-        parse_stage_data["started_at"] = datetime.now(timezone.utc).isoformat()
-    
-    # Use simplified status structure with only stages (no legacy current_stage/stage_status fields)
+    # Use simplified status structure with async upload
     document.status_dict = {
         "stages": {
             "upload": {
-                "status": "completed",
-                "started_at": datetime.now(timezone.utc).isoformat(),
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-                "attempts": 1
+                "status": "waiting",  # Upload starts as waiting for async processing
+                "config": {
+                    "target_s3_key": s3_key,
+                    "content_type": file.content_type
+                }
             },
-            "parse": parse_stage_data,
+            "parse": {
+                "status": "waiting",
+                "config": {
+                    "do_ocr": True,
+                    "do_table_structure": True,
+                    "ocr_language": "en"
+                }
+            },
             "chunk": {
                 "status": "waiting", 
                 "config": {
@@ -180,38 +173,36 @@ async def upload_document(
         # such as: page_count, is_scanned, table_count, etc.
     }
     
-    # Upload to S3
-    file.file.seek(0)  # Reset file pointer to beginning
-    upload_success = s3_service.upload_file(
-        file.file, 
-        s3_key, 
-        file.content_type,
-        metadata={
-            "document_id": str(document_id),
-            "uploaded_by": str(current_user.id),
-            "source_type": source_type,
-            "binary_hash": binary_hash
-        }
-    )
-    
-    if not upload_success:
-        raise HTTPException(
-            status_code=500, 
-            detail="Failed to upload document to storage"
-        )
-    
-    # Save document to database
+    # Save document to database first (without file_path set yet)
+    document.file_path = None  # Will be set by upload stage
     session.add(document)
     session.commit()
     session.refresh(document)
     
-    # Start pipeline processing if requested
+    # Start async upload stage
+    background_tasks.add_task(
+        pipeline_processor.process_stage,
+        document_id=str(document_id),
+        stage_name="upload",
+        config={
+            "file_content": file_content,
+            "s3_key": s3_key,
+            "content_type": file.content_type,
+            "auto_start_parse": run_pipeline,  # Auto-start parse if requested
+            "metadata": {
+                "document_id": str(document_id),
+                "uploaded_by": str(current_user.id),
+                "source_type": source_type,
+                "binary_hash": binary_hash
+            }
+        }
+    )
+    
+    # Start parse stage after upload if requested
     if run_pipeline:
-        background_tasks.add_task(
-            process_stage_async,
-            str(document_id),
-            "parse"
-        )
+        # Parse will be triggered automatically after upload completes
+        # or can be started manually once upload is done
+        pass
     
     return DocumentResponse.from_document(document)
 
@@ -409,8 +400,8 @@ async def start_document_stage(
         raise HTTPException(status_code=404, detail="Document not found")
     
     # Validate stage
-    if stage not in ["parse", "chunk-index"]:
-        raise HTTPException(status_code=400, detail=f"Invalid stage: {stage}. Must be 'parse' or 'chunk-index'")
+    if stage not in ["upload", "parse", "chunk-index"]:
+        raise HTTPException(status_code=400, detail=f"Invalid stage: {stage}. Must be 'upload', 'parse' 'chunk' or 'index'")
     
     # Get stages from the new status structure
     status_dict = document.status_dict
@@ -448,11 +439,12 @@ async def start_document_stage(
     session.add(document)
     session.commit()
     
-    # Start the stage processing in background
+    # Start the stage processing in background using pipeline processor
     background_tasks.add_task(
-        process_stage_async,
+        pipeline_processor.process_stage,
         document_id=str(document_id),
-        stage=stage
+        stage_name=stage,
+        config=config_overrides
     )
     
     return {"message": f"Stage '{stage}' started successfully", "stages": document.status_dict.get("stages", {})}
@@ -492,141 +484,9 @@ async def get_stage_error(
 # Removed get_stage_progress endpoint - redundant with update_document_status
 
 
-async def process_stage_async(document_id: str, stage: str) -> None:
-    """Process a specific stage asynchronously"""
-    from app.core.db import engine
-    from sqlmodel import Session
-    from datetime import datetime, timezone
-    
-    try:
-        with Session(engine) as session:
-            document = session.get(Document, document_id)
-            if not document:
-                return
-            
-            logger.info(f"Starting {stage} processing for document {document_id}")
-            
-            if stage == "parse":
-                # Process parsing stage using RAGParser microservice
-                logger.info(f"Starting parse stage for document {document_id}")
-                
-                # Import services
-                from app.core.services.ragparser_client import ragparser_client
-                from app.core.services.s3 import s3_service
-                
-                try:
-                    # Generate presigned URL for RAGParser to access the document
-                    document_url = s3_service.get_file_url(document.file_path, expiration=3600)
-                    if not document_url:
-                        raise Exception("Failed to generate document URL for RAGParser")
-                    
-                    # Get parsing config from stage
-                    stages = document.status_dict
-                    parse_config = stages["stages"].get("parse", {}).get("config", {})
-                    
-                    # Submit document to RAGParser
-                    ragparser_response = await ragparser_client.submit_document_for_parsing(
-                        document_url=document_url,
-                        options={
-                            "document_id": document_id,
-                            "filename": document.filename,
-                            "content_type": document.content_type,
-                            **parse_config  # Include OCR and table extraction settings
-                        }
-                    )
-                    
-                    # Update document with task ID
-                    document.ragparser_task_id = ragparser_response.task_id
-                    
-                    # Update stage status to running
-                    stages["stages"]["parse"] = {
-                        **stages["stages"].get("parse", {}),
-                        "status": "running",
-                        "started_at": datetime.now(timezone.utc).isoformat(),
-                        "ragparser_task_id": ragparser_response.task_id,
-                        "queue_position": ragparser_response.queue_position
-                    }
-                    document.status_dict = stages
-                    
-                    # Commit changes
-                    session.add(document)
-                    session.commit()
-                    
-                    logger.info(f"Document {document_id} submitted to RAGParser with task_id: {ragparser_response.task_id}")
-                    logger.info(f"Document task ID stored in database: {document.ragparser_task_id}")
-                    
-                    # Backend monitoring removed - using frontend polling only
-                    
-                except Exception as parse_error:
-                    logger.error(f"Failed to submit document for parsing {document_id}: {parse_error}")
-                    
-                    # Update stage status to failed
-                    stages = document.status_dict
-                    stages["stages"]["parse"] = {
-                        **stages["stages"].get("parse", {}),
-                        "status": "failed",
-                        "failed_at": datetime.now(timezone.utc).isoformat(),
-                        "error_message": str(parse_error),
-                        "attempts": stages["stages"].get("parse", {}).get("attempts", 0) + 1
-                    }
-                    document.status_dict = stages
-                    
-                    session.add(document)
-                    session.commit()
-                    raise parse_error
-                
-            elif stage == "chunk-index":
-                # Process combined chunking and indexing stage
-                logger.info(f"Starting chunk-index stage for document {document_id}")
-                
-                # Import document processor
-                from app.core.services.bulk_processor import BulkProcessor
-                document_processor = BulkProcessor()
-                
-                # Process chunking - splits parsed text into chunks
-                chunks = await document_processor.process_document(document, session)
-                
-                # TODO: Implement vector indexing logic here
-                logger.info(f"Chunking completed for document {document_id}, indexing not yet implemented")
-                
-                # Update stage status using new status structure
-                status_dict = document.status_dict
-                stages = status_dict.get("stages", {})
-                stages["chunk-index"] = {
-                    **stages.get("chunk-index", {}),
-                    "status": "completed",
-                    "completed_at": datetime.now(timezone.utc).isoformat(),
-                    "chunks_created": len(chunks)
-                }
-                status_dict["stages"] = stages
-                document.status_dict = status_dict
-            
-            document.updated_at = datetime.now(timezone.utc)
-            session.add(document)
-            session.commit()
-            
-            logger.info(f"Completed {stage} processing for document {document_id}")
-            
-    except Exception as e:
-        logger.error(f"Error processing {stage} for document {document_id}: {e}")
-        
-        # Update stage status to failed
-        try:
-            with Session(engine) as session:
-                document = session.get(Document, document_id)
-                if document:
-                    status_dict = document.status_dict
-                    stages = status_dict.get("stages", {})
-                    stages[stage] = {
-                        **stages.get(stage, {}),
-                        "status": "failed",
-                        "failed_at": datetime.now(timezone.utc).isoformat(),
-                        "error_message": str(e)
-                    }
-                    status_dict["stages"] = stages
-                    document.status_dict = status_dict
-        except Exception as update_error:
-            logger.error(f"Failed to update stage status after error: {update_error}")
+# Note: process_stage_async function has been replaced by pipeline_processor.process_stage
+# The modular approach now uses document_stages.py for individual stage implementations
+# and pipeline_processor.py for orchestration
 
 
 def _extract_document_characteristics(ragparser_status: Dict[str, Any]) -> Dict[str, Any]:
@@ -868,7 +728,12 @@ async def reparse_document(
         session.commit()
         
         # Use the NEW pathway that properly handles status structure and config
-        background_tasks.add_task(process_stage_async, str(document_id), "parse")
+        background_tasks.add_task(
+            pipeline_processor.process_stage, 
+            document_id=str(document_id), 
+            stage_name="parse",
+            config=parse_config.dict()
+        )
         
         return {
             "message": f"Document reparse started with {parse_config.parser_type} parser",
@@ -928,7 +793,11 @@ async def reprocess_document(
         session.commit()
         
         # Start reprocessing from chunk stage
-        background_tasks.add_task(start_chunk_processing_async, str(document_id))
+        background_tasks.add_task(
+            pipeline_processor.process_stage,
+            document_id=str(document_id),
+            stage_name="chunk-index"
+        )
         
         return {
             "message": "Document reprocessing started with current global configuration",
@@ -992,6 +861,7 @@ async def get_parse_results(
     session: SessionDep,
 ) -> Dict[str, Any]:
     """Get parse results from RAGParser response data"""
+    logger.info(f"Getting parse results for document {document_id}")
     document = session.get(Document, str(document_id))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -1011,8 +881,7 @@ async def get_parse_results(
     if not parse_result:
         raise HTTPException(status_code=404, detail="Parse results not found")
     
-    # Determine parser type from config or result
-    parser_type = parse_stage.get("config", {}).get("parser_type", "unknown")
+    parser_type = parse_stage.get("parser_used", "unknown")
     
     return {
         "document_id": str(document_id),
@@ -1021,7 +890,7 @@ async def get_parse_results(
         "completed_at": parse_stage.get("completed_at"),
         "parser_type": parser_type
     }
-
+    
 
 @router.post("/{document_id}/update-status", response_model=DocumentResponse)
 async def update_document_status(
@@ -1124,30 +993,5 @@ async def update_document_status(
     return DocumentResponse.from_document(document)
 
 
-async def start_chunk_processing_async(document_id: str) -> None:
-    """
-    Background task to start chunk and index processing for a document
-    """
-    from app.core.db import engine
-    from sqlmodel import Session
-    
-    with Session(engine) as session:
-        document = session.get(Document, document_id)
-        if not document:
-            logger.error(f"Document {document_id} not found for chunk processing")
-            return
-        
-        try:
-            # Start chunk processing
-            await pipeline_processor.process_chunk_stage(document, session)
-            
-            # If chunk stage succeeds, start index processing
-            if document.stages.get("chunk", {}).get("status") == "completed":
-                await pipeline_processor.process_index_stage(document, session)
-                
-        except Exception as e:
-            logger.error(f"Chunk/Index processing failed for document {document_id}: {e}")
-            # Update document status to failed
-            document.update_stage_status("chunk", "failed", error_message=str(e))
-            session.add(document)
-            session.commit()
+# Note: start_chunk_processing_async function has been replaced by pipeline_processor.process_stage
+# The modular approach now uses document_stages.py for individual stage implementations

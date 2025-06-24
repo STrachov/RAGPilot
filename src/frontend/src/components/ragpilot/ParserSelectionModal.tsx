@@ -45,6 +45,7 @@ const PARSER_OPTIONS = [
 
 const OCR_LANGUAGES = [
   { value: "en", label: "English" },
+  { value: "ua", label: "Ukrainian" },
   { value: "es", label: "Spanish" },
   { value: "fr", label: "French" },
   { value: "de", label: "German" },
@@ -136,7 +137,7 @@ export const ParserSelectionModal: React.FC<ParserSelectionModalProps> = ({
       <div className="bg-white dark:bg-gray-800 p-6 rounded-lg max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto shadow-2xl border border-gray-200 dark:border-gray-700">
         <div className="flex justify-between items-center mb-6">
           <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
-            Reconfigure and Reparse Document
+            Configure and Parse Document
           </h3>
           <button
             onClick={onClose}
@@ -158,7 +159,7 @@ export const ParserSelectionModal: React.FC<ParserSelectionModalProps> = ({
                 Document: {document.title || document.filename}
               </h4>
               <p className="text-sm text-blue-700 dark:text-blue-300 mt-1">
-                This will reparse the document with a new parser configuration and restart all processing stages.
+                This will parse the document with a new parser configuration and restart all processing stages.
                 {isLoadingConfig && (
                   <span className="block mt-1 text-xs italic">Loading current configuration...</span>
                 )}
@@ -186,6 +187,7 @@ export const ParserSelectionModal: React.FC<ParserSelectionModalProps> = ({
                 >
                   <div className="flex items-start space-x-3">
                     <input
+                      disabled={parser.value !== "docling"}
                       type="radio"
                       name="parser_type"
                       value={parser.value}

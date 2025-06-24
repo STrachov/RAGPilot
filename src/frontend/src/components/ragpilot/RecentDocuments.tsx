@@ -3,7 +3,7 @@
 import React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { documentsService } from "@/services/documents";
-import { DocumentStatus, Document } from "@/types/ragpilot";
+import { Document } from "@/types/ragpilot";
 import { DocumentStagesControl } from "./DocumentStagesControl";
 
 
@@ -102,7 +102,7 @@ export const RecentDocuments = () => {
                 {/* Stage-Based Processing Controls */}
                 <div className="flex justify-center sm:justify-end">
                   <DocumentStagesControl 
-                    documentId={document.id}
+                    document={document}
                     className=""
                   />
                 </div>

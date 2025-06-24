@@ -1,6 +1,6 @@
 "use client";
 
-import type { Metadata } from "next";
+//import type { Metadata } from "next";
 import React, { useState, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { 

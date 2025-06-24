@@ -20,7 +20,10 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
   useEffect(() => {
     // Redirect to login if not authenticated and not loading
     if (!isLoading && !isAuthenticated) {
-      router.push('/auth/signin');
+      // Preserve current path as return URL
+      const currentPath = window.location.pathname;
+      const returnUrl = encodeURIComponent(currentPath);
+      router.push(`/auth/signin?returnUrl=${returnUrl}`);
     }
   }, [isAuthenticated, isLoading, router]);
 

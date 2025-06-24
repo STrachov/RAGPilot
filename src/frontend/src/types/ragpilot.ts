@@ -29,6 +29,11 @@ export interface DocumentStageInfo {
   queue_position?: number;
   last_check?: string;
   result?: Record<string, unknown>;
+  parser_used?: string;
+  file_size?: number;
+  pages_processed?: number;
+  // Allow any additional fields that might be present in database
+  [key: string]: any;
 }
 
 export interface DocumentStatusStructure {

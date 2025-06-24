@@ -35,48 +35,38 @@ export const ParseResultsModal: React.FC<ParseResultsModalProps> = ({
       // First try to get from document status if available
       if (typeof document.status === 'object' && document.status.stages?.parse) {
         const parseStage = document.status.stages.parse as any;
+        //console.log('Full Parse stage data:', JSON.stringify(parseStage, null, 2)); // Enhanced debug log
         
         if (parseStage.status === 'completed') {
-          // Get result_key and table_keys from document.metadata
-          const resultKey = document.metadata?.result_key;
-          const tableKeys = document.metadata?.table_keys;
+          // Get the actual RAGParser result from the parse stage
+          const ragparserResult = parseStage.result || {};
+          //console.log('RAGParser result:', JSON.stringify(ragparserResult, null, 2)); // Debug log
+          
+          const parserUsed = parseStage.parser_used || 'unknown';
+          console.log('Parser used:', parserUsed);
           
           // Always use the data from document status for completed documents
-          const mockResult: ParseResult = {
+          const result: ParseResult = {
             document_id: document.id,
             status: parseStage.status,
             completed_at: parseStage.completed_at,
-            parser_type: parseStage.config?.parser_type || 'unknown',
-            parse_result: {
-              files: resultKey ? {
-                main_result: resultKey
-              } : {},
-              tables: (tableKeys && Array.isArray(tableKeys)) ? tableKeys.map((key: string, index: number) => ({
-                csv: key,
-                markdown: `Table ${index + 1} data (download CSV for full data)`
-              })) : [],
-              metadata: {
-                result_key: resultKey,
-                table_keys: tableKeys,
-                progress: document.metadata?.ragparser_progress,
-                ragparser_task_id: document.metadata?.ragparser_task_id,
-                source: 'document_status'
-              }
-            }
+            parser_type: parserUsed,
+            parse_result: ragparserResult
           };
           
-          setParseResult(mockResult);
+          setParseResult(result);
           setIsLoading(false);
-          return;
+          //return;
         }
       }
       
-      // Only try API call for non-completed documents or as last resort
+      // Try API call for non-completed documents or as fallback
       try {
-      const result = await documentsService.getParseResults(document.id);
-      setParseResult(result);
+        const result = await documentsService.getParseResults(document.id);
+        console.log('API parse result:', JSON.stringify(result, null, 2)); // Debug log
+        setParseResult(result);
       } catch (apiError: any) {
-        // If API fails and we have a completed parse stage, show a helpful message
+        // If API fails and we have a completed parse stage, show helpful message
         if (typeof document.status === 'object' && document.status.stages?.parse?.status === 'completed') {
           setError('Parse results are being processed. Please wait a moment and try again.');
         } else {
@@ -96,32 +86,174 @@ export const ParseResultsModal: React.FC<ParseResultsModalProps> = ({
     }
   }, [isOpen, document.id]);
 
-  const renderFileLinks = (files: any) => {
-    if (!files || typeof files !== 'object') return null;
+  // Helper function to render document metadata
+  const renderDocumentMetadata = () => {
+    if (!document.metadata) return null;
+
+    const metadata = document.metadata;
+    const structure = metadata.structure || {};
+    
+    return (
+      <div className="space-y-4">
+        <h4 className="font-medium text-gray-800 dark:text-gray-200 mb-3">Document Analysis</h4>
+        
+        {/* Document Structure Information */}
+        <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded">
+          <h5 className="font-medium text-sm mb-3 text-gray-700 dark:text-gray-300">Document Structure</h5>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+            {structure.page_count && (
+              <div>
+                <span className="font-medium text-gray-600 dark:text-gray-400">Pages:</span>
+                <span className="ml-2 text-gray-800 dark:text-gray-200">{structure.page_count}</span>
+              </div>
+            )}
+            {structure.table_count !== undefined && (
+              <div>
+                <span className="font-medium text-gray-600 dark:text-gray-400">Tables:</span>
+                <span className="ml-2 text-gray-800 dark:text-gray-200">{structure.table_count}</span>
+              </div>
+            )}
+            {structure.image_count !== undefined && (
+              <div>
+                <span className="font-medium text-gray-600 dark:text-gray-400">Images:</span>
+                <span className="ml-2 text-gray-800 dark:text-gray-200">{structure.image_count}</span>
+              </div>
+            )}
+            {structure.word_count && (
+              <div>
+                <span className="font-medium text-gray-600 dark:text-gray-400">Words:</span>
+                <span className="ml-2 text-gray-800 dark:text-gray-200">{structure.word_count.toLocaleString()}</span>
+              </div>
+            )}
+            {structure.text_length && (
+              <div>
+                <span className="font-medium text-gray-600 dark:text-gray-400">Characters:</span>
+                <span className="ml-2 text-gray-800 dark:text-gray-200">{structure.text_length.toLocaleString()}</span>
+              </div>
+            )}
+            {structure.language && (
+              <div>
+                <span className="font-medium text-gray-600 dark:text-gray-400">Language:</span>
+                <span className="ml-2 text-gray-800 dark:text-gray-200">{structure.language}</span>
+              </div>
+            )}
+            {structure.is_scanned !== undefined && (
+              <div>
+                <span className="font-medium text-gray-600 dark:text-gray-400">Scanned:</span>
+                <span className={`ml-2 ${structure.is_scanned ? 'text-orange-600' : 'text-green-600'}`}>
+                  {structure.is_scanned ? 'Yes' : 'No'}
+                </span>
+              </div>
+            )}
+            {structure.mime_type && (
+              <div>
+                <span className="font-medium text-gray-600 dark:text-gray-400">MIME Type:</span>
+                <span className="ml-2 text-gray-800 dark:text-gray-200 font-mono text-xs">{structure.mime_type}</span>
+              </div>
+            )}
+          </div>
+          
+          {structure.rotated_pages && structure.rotated_pages.length > 0 && (
+            <div className="mt-3">
+              <span className="font-medium text-gray-600 dark:text-gray-400">Rotated Pages:</span>
+              <span className="ml-2 text-gray-800 dark:text-gray-200">{structure.rotated_pages.join(', ')}</span>
+            </div>
+          )}
+          
+          {structure.analysis_source && (
+            <div className="mt-3">
+              <span className="font-medium text-gray-600 dark:text-gray-400">Analysis Source:</span>
+              <span className={`ml-2 px-2 py-1 rounded text-xs ${
+                structure.analysis_source === 'ragparser' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
+                structure.analysis_source === 'fallback' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200' :
+                'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+              }`}>
+                {structure.analysis_source}
+              </span>
+            </div>
+          )}
+          
+          {structure.analysis_limitations && (
+            <div className="mt-3">
+              <span className="font-medium text-gray-600 dark:text-gray-400">Limitations:</span>
+              <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                {Object.entries(structure.analysis_limitations).map(([key, value]) => (
+                  <div key={key} className="ml-2">• {key}: {value}</div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // Helper function to render file links from RAGParser results
+  const renderResultFiles = (result: any) => {
+    if (!result) return null;
+
+    const files = [];
+    
+    // Main result file (JSON)
+    if (result.result_key) {
+      files.push({
+        type: 'Main Result (JSON)',
+        key: result.result_key,
+        filename: result.result_key.split('/').pop() || 'result.json',
+        format: 'JSON'
+      });
+    }
+    
+    // Table files
+    if (result.table_keys && Array.isArray(result.table_keys)) {
+      result.table_keys.forEach((tableKey: string, index: number) => {
+        files.push({
+          type: `Table ${index + 1}`,
+          key: tableKey,
+          filename: tableKey.split('/').pop() || `table_${index}.csv`,
+          format: tableKey.endsWith('.json') ? 'JSON' : 'CSV'
+        });
+      });
+    }
+
+    if (files.length === 0) return null;
 
     return (
-      <div className="space-y-2">
-        {Object.entries(files).map(([fileType, filePath]) => {
-          if (typeof filePath !== 'string') return null;
-          
-          const fullUrl = documentsService.getFullResultUrl(filePath as string);
-          const fileName = (filePath as string).split('/').pop() || fileType;
+      <div className="space-y-3">
+        <h4 className="font-medium text-gray-800 dark:text-gray-200">Parse Result Files</h4>
+        {files.map((file, index) => {
+          const fullUrl = documentsService.getFullResultUrl(file.key);
           
           return (
-            <div key={fileType} className="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-800 rounded">
-              <div className="flex items-center space-x-2">
-                <svg className="h-4 w-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <span className="text-sm font-medium">{fileType.charAt(0).toUpperCase() + fileType.slice(1)}</span>
-                <span className="text-xs text-gray-500">({fileName})</span>
+            <div key={index} className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded">
+              <div className="flex items-center space-x-3">
+                <div className="flex-shrink-0">
+                  {file.format === 'JSON' ? (
+                    <svg className="h-5 w-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                  ) : (
+                    <svg className="h-5 w-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2h2a2 2 0 002-2z" />
+                    </svg>
+                  )}
+                </div>
+                <div>
+                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{file.type}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">
+                    {file.filename} • {file.format}
+                  </div>
+                </div>
               </div>
               <a
                 href={fullUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-sm font-medium"
+                className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-blue-700 bg-blue-100 hover:bg-blue-200 dark:bg-blue-900 dark:text-blue-200 dark:hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
               >
+                <svg className="h-3 w-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
                 Download
               </a>
             </div>
@@ -131,44 +263,13 @@ export const ParseResultsModal: React.FC<ParseResultsModalProps> = ({
     );
   };
 
-  const renderTableData = (tables: any) => {
-    if (!tables || !Array.isArray(tables)) return null;
-
-    return (
-      <div className="space-y-3">
-        {tables.map((table: any, index: number) => (
-          <div key={index} className="border border-gray-200 dark:border-gray-600 rounded p-3">
-            <h5 className="font-medium text-sm mb-2">Table {index + 1}</h5>
-            {table.markdown && (
-              <div className="text-xs bg-gray-50 dark:bg-gray-800 p-2 rounded overflow-auto max-h-40">
-                <pre className="whitespace-pre-wrap">{table.markdown}</pre>
-              </div>
-            )}
-            {table.csv && (
-              <div className="mt-2">
-                <a
-                  href={documentsService.getFullResultUrl(table.csv)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-sm"
-                >
-                  Download CSV
-                </a>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    );
-  };
-
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 flex items-center justify-center" style={{ zIndex: 9999999, backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
-      <div className="bg-white dark:bg-gray-800 p-6 rounded-lg max-w-4xl w-full mx-4 max-h-[80vh] overflow-y-auto">
-        <div className="flex justify-between items-center mb-4">
-          <h3 className="text-lg font-semibold text-black dark:text-white">
+      <div className="bg-white dark:bg-gray-800 p-6 rounded-lg max-w-6xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="text-xl font-semibold text-black dark:text-white">
             Parse Results: {document.title || document.filename}
           </h3>
           <button
@@ -189,7 +290,7 @@ export const ParseResultsModal: React.FC<ParseResultsModalProps> = ({
         )}
 
         {error && (
-          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-4 mb-4">
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-4 mb-6">
             <div className="flex">
               <svg className="h-5 w-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -202,102 +303,68 @@ export const ParseResultsModal: React.FC<ParseResultsModalProps> = ({
           </div>
         )}
 
-        {parseResult && (
-          <div className="space-y-6">
-            {/* Parse Info */}
+        {!isLoading && !error && (
+          <div className="space-y-8">
+            {/* Document Information Summary */}
             <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-4">
-              <h4 className="font-medium text-blue-800 dark:text-blue-200 mb-2">Parse Information</h4>
-              <div className="grid grid-cols-2 gap-4 text-sm">
+              <h4 className="font-medium text-blue-800 dark:text-blue-200 mb-3">Document Information</h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                 <div>
-                  <span className="font-medium text-gray-700 dark:text-gray-300">Parser:</span>
-                  <span className="ml-2 text-gray-600 dark:text-gray-400">{parseResult.parser_type}</span>
+                  <span className="font-medium text-gray-700 dark:text-gray-300">Filename:</span>
+                  <div className="text-gray-600 dark:text-gray-400 break-all">{document.filename}</div>
                 </div>
                 <div>
-                  <span className="font-medium text-gray-700 dark:text-gray-300">Status:</span>
-                  <span className={`ml-2 ${parseResult.status === 'completed' ? 'text-green-600' : 'text-yellow-600'}`}>
-                    {parseResult.status}
-                  </span>
+                  <span className="font-medium text-gray-700 dark:text-gray-300">Size:</span>
+                  <div className="text-gray-600 dark:text-gray-400">{documentsService.formatFileSize(document.file_size)}</div>
                 </div>
-                {parseResult.completed_at && (
-                  <div className="col-span-2">
-                    <span className="font-medium text-gray-700 dark:text-gray-300">Completed:</span>
-                    <span className="ml-2 text-gray-600 dark:text-gray-400">
-                      {new Date(parseResult.completed_at).toLocaleString()}
-                    </span>
-                  </div>
+                <div>
+                  <span className="font-medium text-gray-700 dark:text-gray-300">Content Type:</span>
+                  <div className="text-gray-600 dark:text-gray-400 font-mono text-xs">{document.content_type}</div>
+                </div>
+                <div>
+                  <span className="font-medium text-gray-700 dark:text-gray-300">Uploaded:</span>
+                  <div className="text-gray-600 dark:text-gray-400">{new Date(document.created_at).toLocaleString()}</div>
+                </div>
+                {parseResult && (
+                  <>
+                    <div>
+                      <span className="font-medium text-gray-700 dark:text-gray-300">Parser:</span>
+                      <div className={`${parseResult.parser_type === 'unknown' ? 'text-orange-600 dark:text-orange-400' : 'text-gray-600 dark:text-gray-400'}`}>
+                        {parseResult.parser_type}
+                        {parseResult.parser_type === 'unknown' && (
+                          <span className="text-xs ml-1">(detection failed)</span>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <span className="font-medium text-gray-700 dark:text-gray-300">Parse Status:</span>
+                      <span className={`ml-2 px-2 py-1 rounded text-xs ${
+                        parseResult.status === 'completed' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
+                        parseResult.status === 'running' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200' :
+                        parseResult.status === 'failed' ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' :
+                        'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200'
+                      }`}>
+                        {parseResult.status}
+                      </span>
+                    </div>
+                    {parseResult.completed_at && (
+                      <div>
+                        <span className="font-medium text-gray-700 dark:text-gray-300">Completed:</span>
+                        <div className="text-gray-600 dark:text-gray-400 text-xs">
+                          {new Date(parseResult.completed_at).toLocaleString()}
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
 
-            {/* Output Files */}
-            {parseResult.parse_result?.files && Object.keys(parseResult.parse_result.files).length > 0 && (
-              <div>
-                <h4 className="font-medium text-gray-800 dark:text-gray-200 mb-3">Output Files</h4>
-                {renderFileLinks(parseResult.parse_result.files)}
-              </div>
-            )}
+            {/* Render Document Metadata */}
+            {renderDocumentMetadata()}
 
-            {/* Extracted Tables */}
-            {parseResult.parse_result?.tables && parseResult.parse_result.tables.length > 0 && (
-              <div>
-                <h4 className="font-medium text-gray-800 dark:text-gray-200 mb-3">
-                  Extracted Tables ({parseResult.parse_result.tables.length})
-                </h4>
-                {renderTableData(parseResult.parse_result.tables)}
-              </div>
-            )}
-
-            {/* Images */}
-            {parseResult.parse_result?.images && parseResult.parse_result.images.length > 0 && (
-              <div>
-                <h4 className="font-medium text-gray-800 dark:text-gray-200 mb-3">
-                  Extracted Images ({parseResult.parse_result.images.length})
-                </h4>
-                <div className="grid grid-cols-2 gap-3">
-                  {parseResult.parse_result.images.map((image: any, index: number) => (
-                    <div key={index} className="border border-gray-200 dark:border-gray-600 rounded p-2">
-                      <div className="text-xs text-gray-600 dark:text-gray-400 mb-1">
-                        Image {index + 1}
-                      </div>
-                      {image.path && (
-                        <a
-                          href={documentsService.getFullResultUrl(image.path)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-sm"
-                        >
-                          View Image
-                        </a>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Metadata */}
-            {parseResult.parse_result?.metadata && (
-              <div>
-                <h4 className="font-medium text-gray-800 dark:text-gray-200 mb-3">Metadata</h4>
-                <div className="bg-gray-50 dark:bg-gray-800 p-3 rounded text-xs overflow-auto max-h-40">
-                  <pre className="whitespace-pre-wrap">
-                    {JSON.stringify(parseResult.parse_result.metadata, null, 2)}
-                  </pre>
-                </div>
-              </div>
-            )}
-
-            {/* Raw Result (for debugging) */}
-            <details className="border border-gray-200 dark:border-gray-600 rounded">
-              <summary className="p-3 bg-gray-50 dark:bg-gray-800 cursor-pointer text-sm font-medium">
-                Raw Parse Result (Debug)
-              </summary>
-              <div className="p-3 bg-gray-50 dark:bg-gray-800 text-xs overflow-auto max-h-60">
-                <pre className="whitespace-pre-wrap">
-                  {JSON.stringify(parseResult.parse_result, null, 2)}
-                </pre>
-              </div>
-            </details>
+            {/* Render Parse Result Files */}
+            {parseResult?.parse_result && renderResultFiles(parseResult.parse_result)}
           </div>
         )}
 

@@ -2,17 +2,80 @@ import asyncio
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
+from sqlmodel import Session
 
 from app.core.config.constants import DocumentStatus, DEFAULT_CHUNKING_CONFIG
 from app.core.models.document import Document, DocumentChunk
-from app.core.services.ragparser_client import ragparser_client
-from app.core.services.s3 import s3_service
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from app.core.services.document_stages import document_stages
+from app.core.db import engine
 
 logger = logging.getLogger(__name__)
 
 class PipelineProcessor:
     """Service for orchestrating the complete document processing pipeline"""
+    
+    def __init__(self):
+        self.stages = document_stages
+    
+    async def process_stage(
+        self, 
+        document_id: str, 
+        stage_name: str,
+        config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Process a specific stage with proper error handling and status updates"""
+        
+        try:
+            with Session(engine) as session:
+                document = session.get(Document, document_id)
+                if not document:
+                    raise Exception(f"Document {document_id} not found")
+                
+                logger.info(f"Processing stage '{stage_name}' for document {document_id}")
+                
+                # Route to appropriate stage method
+                if stage_name == "upload":
+                    result = await self.stages.upload_stage(document, session, config)
+                elif stage_name == "parse":
+                    result = await self.stages.parse_stage(document, session, config)
+                elif stage_name == "chunk-index":
+                    result = await self.stages.chunk_index_stage(document, session, config)
+                else:
+                    raise ValueError(f"Unknown stage: {stage_name}")
+                
+                # Update document timestamp
+                document.updated_at = datetime.now(timezone.utc)
+                session.add(document)
+                session.commit()
+                
+                logger.info(f"Completed stage '{stage_name}' for document {document_id}")
+                return result
+                
+        except Exception as e:
+            logger.error(f"Error processing stage '{stage_name}' for document {document_id}: {e}")
+            
+            # Update stage status to failed in a separate session to ensure it's saved
+            try:
+                with Session(engine) as session:
+                    document = session.get(Document, document_id)
+                    if document:
+                        status_dict = document.status_dict
+                        stages = status_dict.get("stages", {})
+                        stages[stage_name] = {
+                            **stages.get(stage_name, {}),
+                            "status": "failed",
+                            "failed_at": datetime.now(timezone.utc).isoformat(),
+                            "error_message": str(e)
+                        }
+                        status_dict["stages"] = stages
+                        document.status_dict = status_dict
+                        document.updated_at = datetime.now(timezone.utc)
+                        session.add(document)
+                        session.commit()
+            except Exception as update_error:
+                logger.error(f"Failed to update stage status after error: {update_error}")
+            
+            raise
     
     async def start_pipeline(self, document: Document, session) -> None:
         """

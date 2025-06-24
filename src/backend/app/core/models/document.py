@@ -21,6 +21,8 @@ else:
 # Pydantic models for API responses
 class DocumentStageInfo(BaseModel):
     """Stage information within document status"""
+    #model_config = {"extra": "allow"}  # Allow extra fields to pass through
+    
     status: str
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
@@ -29,6 +31,13 @@ class DocumentStageInfo(BaseModel):
     attempts: Optional[int] = None
     config: Optional[Dict[str, Any]] = None
     result: Optional[Dict[str, Any]] = None  # For storing RAGParser response
+    
+    # Additional fields found in actual database status
+    parser_used: Optional[str] = None
+    ragparser_task_id: Optional[str] = None
+    queue_position: Optional[int] = None
+    pages_processed: Optional[int] = None
+    file_size: Optional[int] = None  # For upload stage
 
 
 class DocumentStatusStructure(BaseModel):
@@ -43,7 +52,7 @@ class DocumentResponse(BaseModel):
     title: Optional[str] = None
     source_type: Optional[str] = None
     source_name: Optional[str] = None
-    file_path: str
+    file_path: Optional[str] = None  # Can be None during upload stage
     content_type: str
     file_size: int
     status: DocumentStatusStructure
@@ -101,7 +110,7 @@ class Document(SQLModel, table=True):
     title: Optional[str] = Field(default=None, sa_column=Column(String(255), nullable=True))
     source_type: Optional[str] = Field(default=None, sa_column=Column(String(50), nullable=True))
     source_name: Optional[str] = Field(default=None, sa_column=Column(String(255), nullable=True))
-    file_path: str = Field(sa_column=Column(String(255)))
+    file_path: Optional[str] = Field(default=None, sa_column=Column(String(255), nullable=True))  # Nullable for async upload
     content_type: str = Field(sa_column=Column(String(100)))
     file_size: int = Field(sa_column=Column(Integer))
     

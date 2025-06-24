@@ -3,7 +3,7 @@
 import React, { useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { documentsService } from "@/services/documents";
-import { DocumentStatus, Document } from "@/types/ragpilot";
+import { Document, getOverallStatus } from "@/types/ragpilot";
 
 export default function FailedDocumentsPage() {
   const queryClient = useQueryClient();
@@ -12,13 +12,15 @@ export default function FailedDocumentsPage() {
     document.title = "Failed Documents | RAGPilot";
   }, []);
 
-  const { data: documents, isLoading, error } = useQuery({
+  const { data: allDocuments, isLoading, error } = useQuery({
     queryKey: ['documents', 'failed'],
     queryFn: () => documentsService.getDocuments({ 
-      status: DocumentStatus.FAILED,
-      limit: 50 
+      limit: 100 
     }),
   });
+
+  // Filter for failed documents on the client side
+  const documents = allDocuments?.filter(doc => getOverallStatus(doc.status) === 'failed') || [];
 
   const retryMutation = useMutation({
     mutationFn: (documentId: string) => {

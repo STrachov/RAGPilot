@@ -17,7 +17,10 @@ export default function SignIn() {
   // Redirect if already authenticated
   useEffect(() => {
     if (isAuthenticated) {
-      router.push('/');
+      // Check if there's a return URL in query params or go to dashboard
+      const searchParams = new URLSearchParams(window.location.search);
+      const returnUrl = searchParams.get('returnUrl') || '/';
+      router.push(returnUrl);
     }
   }, [isAuthenticated, router]);
 
@@ -30,7 +33,10 @@ export default function SignIn() {
     e.preventDefault();
     try {
       await login(credentials);
-      router.push('/');
+      // Check if there's a return URL in query params or go to dashboard
+      const searchParams = new URLSearchParams(window.location.search);
+      const returnUrl = searchParams.get('returnUrl') || '/';
+      router.push(returnUrl);
     } catch (error) {
       // Error is handled by the store
     }
