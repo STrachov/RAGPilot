@@ -1,5 +1,5 @@
 import { apiClient, fileUploadClient, API_ENDPOINTS } from '@/lib/api';
-import { Document, DocumentChunk, DocumentSourceType, DocumentStagesResponse} from '@/types/ragpilot';
+import { Document, DocumentChunk, DocumentSourceType, DocumentStagesResponse, Pipeline, PipelineExecution, PipelineStageStatus } from '@/types/ragpilot';
 
 export interface UploadDocumentRequest {
   file: File;
@@ -215,7 +215,7 @@ export const documentsService = {
   // Start or retry a specific processing stage
   async startDocumentStage(
     id: string, 
-    stage: 'parse' | 'chunk-index',
+    stage: 'parse' | 'chunk' | 'index',
     configOverrides?: Record<string, unknown>
   ): Promise<{ message: string; stages: any }> {
     const { data } = await apiClient.post(`/documents/${id}/stages/${stage}/start`, {
@@ -310,6 +310,37 @@ export const documentsService = {
     
     // RAGParser now uses document IDs in URLs, so no special encoding handling needed
     return `${BUCKET_URL}/${cleanPartialUrl}`;
+  },
+
+  /**
+   * Get all available predefined pipelines
+   */
+  async getAvailablePipelines(): Promise<Record<string, Pipeline>> {
+    const { data } = await apiClient.get(API_ENDPOINTS.PIPELINES.LIST);
+    return data;
+  },
+
+  /**
+   * Get information about all available stages
+   */
+  async getAvailableStages(): Promise<Record<string, PipelineStageStatus>> {
+    const { data } = await apiClient.get(API_ENDPOINTS.PIPELINES.STAGES);
+    return data;
+  },
+
+  /**
+   * Execute a predefined pipeline for a document
+   */
+  async executePipeline(
+    documentId: string,
+    pipelineName: string,
+    configOverrides?: Record<string, Record<string, any>>
+  ): Promise<PipelineExecution> {
+    const { data } = await apiClient.post(
+      API_ENDPOINTS.PIPELINES.EXECUTE(documentId, pipelineName),
+      { config_overrides: configOverrides }
+    );
+    return data;
   }
 };
 

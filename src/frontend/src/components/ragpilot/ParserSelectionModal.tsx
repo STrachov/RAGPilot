@@ -4,23 +4,23 @@ import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { documentsService } from "@/services/documents";
-import { Document } from "@/types/ragpilot";
-
-interface ParseConfig {
-  parser_type: "docling" | "marker" | "unstructured";
-  do_ocr: boolean;
-  extract_tables: boolean;
-  extract_images: boolean;
-  ocr_language: string;
-  preserve_formatting: boolean;
-  handle_multi_column: boolean;
-}
+import { Document, ParseConfig } from "@/types/ragpilot";
 
 interface ParserSelectionModalProps {
   isOpen: boolean;
   onClose: () => void;
   document: Document;
 }
+
+const defaultParseConfig: ParseConfig = {
+  parser_type: "docling",
+  do_ocr: true,
+  extract_tables: true,
+  extract_images: false,
+  ocr_language: "auto",
+  preserve_formatting: true,
+  handle_multi_column: true,
+};
 
 const PARSER_OPTIONS = [
   {
@@ -44,6 +44,7 @@ const PARSER_OPTIONS = [
 ];
 
 const OCR_LANGUAGES = [
+  { value: "auto", label: "Auto" },
   { value: "en", label: "English" },
   { value: "ua", label: "Ukrainian" },
   { value: "es", label: "Spanish" },
@@ -66,15 +67,7 @@ export const ParserSelectionModal: React.FC<ParserSelectionModalProps> = ({
 }) => {
   const queryClient = useQueryClient();
   
-  const [config, setConfig] = useState<ParseConfig>({
-    parser_type: "docling", // Default to docling as recommended
-    do_ocr: true,
-    extract_tables: true,
-    extract_images: false,
-    ocr_language: "en",
-    preserve_formatting: true,
-    handle_multi_column: true
-  });
+  const [config, setConfig] = useState<ParseConfig>(defaultParseConfig);
 
   const [isLoadingConfig, setIsLoadingConfig] = useState(false);
 
@@ -85,16 +78,7 @@ export const ParserSelectionModal: React.FC<ParserSelectionModalProps> = ({
       documentsService.getDocumentParseConfig(document.id)
         .then((response) => {
           if (response.parse_config) {
-            // Map the backend config to frontend config
-            setConfig({
-              parser_type: response.parse_config.parser_type || "docling",
-              do_ocr: response.parse_config.do_ocr ?? true,
-              extract_tables: response.parse_config.extract_tables ?? true,
-              extract_images: response.parse_config.extract_images ?? false,
-              ocr_language: response.parse_config.ocr_language || "en",
-              preserve_formatting: response.parse_config.preserve_formatting ?? true,
-              handle_multi_column: response.parse_config.handle_multi_column ?? true
-            });
+            setConfig(response.parse_config); // ✅ Use backend config as-is
           }
         })
         .catch((error) => {

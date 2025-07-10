@@ -1,150 +1,170 @@
+"""
+Configuration Service
+Manages application configuration using JSON file-based storage
+"""
+
 import json
-import logging
+import os
+from pathlib import Path
 from typing import Dict, Any, Optional
-from sqlmodel import Session, select
-from datetime import datetime, timezone
+from threading import Lock
 
-from app.core.config.processing_config import GlobalProcessingConfig, DEFAULT_GLOBAL_CONFIG
-from app.core.models.settings import Setting
-from app.core.db import engine
-
-logger = logging.getLogger(__name__)
+from app.core.config.constants import GlobalProcessingConfig, ParseConfig, ChunkConfig, IndexConfig
+from app.core.logger import app_logger as logger
 
 class ConfigService:
-    """Service for managing global processing configuration"""
-    
-    GLOBAL_CONFIG_KEY = "global_processing_config"
+    """Service for managing application configuration using JSON files"""
     
     def __init__(self):
-        self._cached_config: Optional[GlobalProcessingConfig] = None
-        self._cache_timestamp: Optional[datetime] = None
-        self._cache_ttl_seconds = 300  # 5 minutes cache TTL
+        self.config_file = Path("app/config/processing_config.json")
+        self._config_cache: Optional[GlobalProcessingConfig] = None
+        self._cache_lock = Lock()
+        
+        # Ensure config directory exists
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Create default config file if it doesn't exist
+        if not self.config_file.exists():
+            self._create_default_config()
+    
+    def _create_default_config(self) -> None:
+        """Create default configuration file"""
+        try:
+            default_config = GlobalProcessingConfig()
+            self._save_config(default_config)
+            logger.info("Created default configuration file")
+        except Exception as e:
+            logger.error(f"Failed to create default configuration: {e}")
+            raise
+    
+    def _load_config_from_file(self) -> GlobalProcessingConfig:
+        """Load configuration from JSON file"""
+        try:
+            with open(self.config_file, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+            
+            return GlobalProcessingConfig.from_dict(config_data)
+        except FileNotFoundError:
+            logger.warning("Configuration file not found, creating default")
+            self._create_default_config()
+            return GlobalProcessingConfig()
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in configuration file: {e}")
+            # Backup corrupted file and create new default
+            backup_path = f"{self.config_file}.backup"
+            os.rename(self.config_file, backup_path)
+            logger.info(f"Backed up corrupted config to {backup_path}")
+            self._create_default_config()
+            return GlobalProcessingConfig()
+        except Exception as e:
+            logger.error(f"Failed to load configuration: {e}")
+            raise
+    
+    def _save_config(self, config: GlobalProcessingConfig) -> None:
+        """Save configuration to JSON file"""
+        try:
+            config_data = config.to_dict()
+            
+            # Write to temporary file first, then rename (atomic operation)
+            temp_file = f"{self.config_file}.tmp"
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(config_data, f, indent=2, ensure_ascii=False)
+            os.remove(self.config_file)
+            os.rename(temp_file, self.config_file)
+            
+            # Invalidate cache
+            with self._cache_lock:
+                self._config_cache = None
+                
+            logger.info("Configuration saved successfully")
+        except Exception as e:
+            logger.error(f"Failed to save configuration: {e}")
+            # Clean up temp file if it exists
+            if os.path.exists(f"{self.config_file}.tmp"):
+                os.remove(f"{self.config_file}.tmp")
+            raise
     
     def get_global_config(self) -> GlobalProcessingConfig:
-        """
-        Get the current global processing configuration
-        
-        Returns:
-            GlobalProcessingConfig: Current global configuration
-        """
-        # Check cache first
-        if self._is_cache_valid():
-            return self._cached_config
-        
-        # Load from database
-        with Session(engine) as session:
-            try:
-                statement = select(Setting).where(Setting.key == self.GLOBAL_CONFIG_KEY)
-                result = session.exec(statement).first()
-                
-                if result and result.value:
-                    config_data = json.loads(result.value) if isinstance(result.value, str) else result.value
-                    config = GlobalProcessingConfig.from_dict(config_data)
-                else:
-                    # Use default configuration if not found
-                    config = DEFAULT_GLOBAL_CONFIG
-                    # Save default to database
-                    self._save_config_to_db(config, session)
-                
-                # Update cache
-                self._cached_config = config
-                self._cache_timestamp = datetime.now(timezone.utc)
-                
-                return config
-                
-            except Exception as e:
-                logger.error(f"Error loading global configuration: {e}")
-                # Return default configuration on error
-                return DEFAULT_GLOBAL_CONFIG
+        """Get current global configuration with caching"""
+        with self._cache_lock:
+            if self._config_cache is None:
+                self._config_cache = self._load_config_from_file()
+            return self._config_cache
     
-    def update_global_config(self, config: GlobalProcessingConfig) -> bool:
-        """
-        Update the global processing configuration
-        
-        Args:
-            config: New global configuration
-            
-        Returns:
-            bool: True if update was successful
-        """
-        with Session(engine) as session:
-            try:
-                # Validate configuration
-                config_dict = config.to_dict()
-                
-                # Save to database
-                success = self._save_config_to_db(config, session)
-                
-                if success:
-                    # Update cache
-                    self._cached_config = config
-                    self._cache_timestamp = datetime.now(timezone.utc)
-                    logger.info("Global processing configuration updated successfully")
-                
-                return success
-                
-            except Exception as e:
-                logger.error(f"Error updating global configuration: {e}")
-                return False
+    def update_global_config(self, new_config: GlobalProcessingConfig) -> None:
+        """Update global configuration"""
+        try:
+            self._save_config(new_config)
+            logger.info("Global configuration updated successfully")
+        except Exception as e:
+            logger.error(f"Failed to update global configuration: {e}")
+            raise
+    
+    def get_parse_config(self) -> Dict[str, Any]:
+        """Get current parse configuration as dictionary"""
+        global_config = self.get_global_config()
+        return global_config.parse_config.model_dump()
+    
+    def get_global_parse_config(self) -> ParseConfig:
+        """Get current parse configuration as ParseConfig object"""
+        global_config = self.get_global_config()
+        return global_config.parse_config
     
     def get_chunk_config(self) -> Dict[str, Any]:
         """Get current chunk configuration as dictionary"""
         global_config = self.get_global_config()
-        return global_config.chunk_config.dict()
+        return global_config.chunk_config.model_dump()
+    
+    def get_global_chunk_config(self) -> ChunkConfig:
+        """Get current chunk configuration as ChunkConfig object"""
+        global_config = self.get_global_config()
+        return global_config.chunk_config
     
     def get_index_config(self) -> Dict[str, Any]:
         """Get current index configuration as dictionary"""
         global_config = self.get_global_config()
-        return global_config.index_config.dict()
+        return global_config.index_config.model_dump()
     
-    def invalidate_cache(self):
-        """Invalidate the configuration cache"""
-        self._cached_config = None
-        self._cache_timestamp = None
+    def get_global_index_config(self) -> IndexConfig:
+        """Get current index configuration as IndexConfig object"""
+        global_config = self.get_global_config()
+        return global_config.index_config
     
-    def _is_cache_valid(self) -> bool:
-        """Check if the cached configuration is still valid"""
-        if not self._cached_config or not self._cache_timestamp:
-            return False
+    def invalidate_cache(self) -> None:
+        """Invalidate configuration cache"""
+        with self._cache_lock:
+            self._config_cache = None
+        logger.info("Configuration cache invalidated")
+    
+    def reload_config(self) -> GlobalProcessingConfig:
+        """Force reload configuration from file"""
+        self.invalidate_cache()
+        return self.get_global_config()
+    
+    def backup_config(self, backup_path: Optional[str] = None) -> str:
+        """Create a backup of current configuration"""
+        if backup_path is None:
+            backup_path = f"{self.config_file}.backup"
         
-        age = datetime.now(timezone.utc) - self._cache_timestamp
-        return age.total_seconds() < self._cache_ttl_seconds
-    
-    def _save_config_to_db(self, config: GlobalProcessingConfig, session: Session) -> bool:
-        """Save configuration to database"""
         try:
-            # Check if setting exists
-            statement = select(Setting).where(Setting.key == self.GLOBAL_CONFIG_KEY)
-            existing = session.exec(statement).first()
-            
-            config_json = json.dumps(config.to_dict())
-            
-            if existing:
-                # Update existing
-                existing.value = config_json
-                existing.updated_at = datetime.now(timezone.utc)
-                session.add(existing)
-            else:
-                # Create new - need to create a proper Setting instance
-                from app.core.models.settings import SettingType
-                new_setting = Setting(
-                    key=self.GLOBAL_CONFIG_KEY,
-                    value=config_json,
-                    type=SettingType.SYSTEM_CONFIG,
-                    description="Global processing configuration for chunking and indexing",
-                    is_secret=False,
-                    is_editable=True,
-                    created_at=datetime.now(timezone.utc)
-                )
-                session.add(new_setting)
-            
-            session.commit()
-            return True
-            
+            import shutil
+            shutil.copy2(self.config_file, backup_path)
+            logger.info(f"Configuration backed up to {backup_path}")
+            return backup_path
         except Exception as e:
-            logger.error(f"Error saving configuration to database: {e}")
-            session.rollback()
-            return False
+            logger.error(f"Failed to backup configuration: {e}")
+            raise
+    
+    def restore_config(self, backup_path: str) -> None:
+        """Restore configuration from backup"""
+        try:
+            import shutil
+            shutil.copy2(backup_path, self.config_file)
+            self.invalidate_cache()
+            logger.info(f"Configuration restored from {backup_path}")
+        except Exception as e:
+            logger.error(f"Failed to restore configuration: {e}")
+            raise
 
 # Global instance
 config_service = ConfigService() 

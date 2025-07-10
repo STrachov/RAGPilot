@@ -40,7 +40,8 @@ export interface DocumentStatusStructure {
   stages: {
     upload: DocumentStageInfo;
     parse: DocumentStageInfo;
-    "chunk-index": DocumentStageInfo;
+    chunk: DocumentStageInfo;
+    index: DocumentStageInfo;
   };
 }
 
@@ -123,7 +124,7 @@ export const getCurrentStageProgress = (status: DocumentStatusStructure | string
     return 0;
   }
   
-  const stageOrder = ["upload", "parse", "chunk-index"];
+  const stageOrder = ["upload", "parse", "chunk", "index"];
   const completedCount = Object.entries(status.stages).filter(([_, stage]) => stage && stage.status === "completed").length;
   
   return Math.round((completedCount / stageOrder.length) * 100);
@@ -133,7 +134,8 @@ export const getStageDisplayName = (stage: string): string => {
   const names: Record<string, string> = {
     upload: "Upload",
     parse: "Parse",
-    "chunk-index": "Chunk",
+    chunk: "Chunk",
+    index: "Index",
   };
   return names[stage] || stage;
 };
@@ -149,7 +151,7 @@ export const getCurrentStageName = (status: DocumentStatusStructure | string): s
     return 'unknown';
   }
   
-  const stageOrder = ["upload", "parse", "chunk-index"];
+  const stageOrder = ["upload", "parse", "chunk", "index"];
   
   // Find the first non-completed stage
   for (const stageName of stageOrder) {
@@ -347,4 +349,59 @@ export interface DocumentMetadata {
     has_tables?: boolean;
   };
   [key: string]: any;
+}
+
+export enum PipelineStageType {
+  UPLOAD = "upload",
+  PARSE = "parse",
+  CHUNK = "chunk",
+  INDEX = "index",
+}
+
+export enum PipelineStageStatus {
+  WAITING = "waiting",
+  RUNNING = "running",
+  COMPLETED = "completed",
+  FAILED = "failed",
+  SKIPPED = "skipped",
+}
+
+export interface PipelineStageInfo {
+  name: string;
+  stage_type: PipelineStageType;
+  function_name: string;
+  description?: string;
+  dependencies: string[];
+  optional: boolean;
+  retry_attempts: number;
+  timeout_seconds?: number;
+  config: Record<string, any>;
+}
+
+export interface Pipeline {
+  name: string;
+  description: string;
+  stages: PipelineStageInfo[];
+  allow_parallel: boolean;
+}
+
+export interface PipelineExecution {
+  // ... existing code ...
+}
+
+export interface ParseConfig {
+  parser_type: "docling" | "marker" | "unstructured";
+  do_ocr: boolean;
+  extract_tables: boolean;
+  extract_images: boolean;
+  ocr_language: string;
+  preserve_formatting: boolean;
+  handle_multi_column: boolean;
+}
+
+export interface GlobalConfig {
+  default_pipeline_name: string;
+  parse_config: ParseConfig;
+  chunk_config: ChunkingConfig;
+  index_config: IndexConfig;
 } 

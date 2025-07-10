@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "RAGPilot"
     DOMAIN: str = "localhost"
+    SERVER_HOST: str = "http://localhost:8000"
     FRONTEND_HOST: str = "http://localhost:3000"
     ENVIRONMENT: Literal["local", "staging", "production"] = "local"
     STACK_NAME: str = "full-stack-ai-project"
@@ -83,23 +84,6 @@ class Settings(BaseSettings):
     S3_REGION: str
     S3_ENDPOINT_URL: Optional[str] 
     
-    # File upload settings
-    UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "uploads")
-    MAX_UPLOAD_SIZE: int = int(os.getenv("MAX_UPLOAD_SIZE", "100000000"))  # 100MB
-    ALLOWED_DOCUMENT_TYPES: Set[str] = {
-        "application/pdf",
-        "application/msword",  # doc
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # docx
-        "text/plain",
-        "text/markdown",
-        "text/csv",
-        "application/json",
-        "application/vnd.ms-excel",  # xls
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # xlsx
-        "application/epub+zip",  # epub
-    }
-    FILE_UPLOAD_TIMEOUT: int = int(os.getenv("FILE_UPLOAD_TIMEOUT", "300"))  # 5 minutes
-    
     # Task queue settings
     USE_REDIS: bool = os.getenv("USE_REDIS", "False").lower() == "true"
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -108,6 +92,7 @@ class Settings(BaseSettings):
     RAGPARSER_BASE_URL: str = os.getenv("RAGPARSER_BASE_URL", "http://localhost:8001")
     RAGPARSER_TIMEOUT: int = int(os.getenv("RAGPARSER_TIMEOUT", "300"))  # 5 minutes
     RAGPARSER_API_KEY: Optional[str] = os.getenv("RAGPARSER_API_KEY", None)
+    RAGPARSER_BUCKET_URL: str = os.getenv("RAGPARSER_BUCKET_URL", "https://pub-381250270a5e44868e19775ade02245c.r2.dev")
     UNKNOWN_VALUE: str = "unknown"
     
     # Docker settings

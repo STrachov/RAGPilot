@@ -4,7 +4,7 @@ from sqlmodel import Session, select
 from datetime import datetime, timezone
 
 from app.core.models.document import Document
-from app.core.services.config_service import config_service
+from app.core.services.dynamic_pipeline import dynamic_pipeline_service
 from app.core.db import engine
 
 logger = logging.getLogger(__name__)
@@ -17,14 +17,8 @@ class BulkProcessor:
     
     async def reprocess_all_documents(self, session: Session = None) -> bool:
         """
-        Reprocess all documents with current global configuration
-        This will reset chunk and index stages to waiting and trigger reprocessing
-        
-        Args:
-            session: Database session (optional, will create new if not provided)
-            
-        Returns:
-            bool: True if bulk reprocessing was initiated successfully
+        Reprocess all documents by running the 'standard_rag' pipeline.
+        This will automatically handle dependencies and skip completed stages.
         """
         if self.processing:
             logger.warning("Bulk reprocessing already in progress")
@@ -33,64 +27,32 @@ class BulkProcessor:
         self.processing = True
         
         try:
-            # Use provided session or create new one
             if session is None:
                 session = Session(engine)
                 should_close = True
             else:
                 should_close = False
             
-            # Get all documents
             statement = select(Document)
             documents = session.exec(statement).all()
             
-            logger.info(f"Starting bulk reprocessing for {len(documents)} documents")
+            logger.info(f"Starting bulk reprocessing for {len(documents)} documents using 'standard_rag' pipeline")
             
-            # Get current global configuration
-            global_config = config_service.get_global_config()
-            
-            # Update each document's status to trigger reprocessing
-            updated_count = 0
+            processed_count = 0
             for document in documents:
                 try:
-                    # Update document status to reset chunk and index stages
-                    status_data = document.status_dict
-                    
-                    # Reset chunk and index stages to waiting
-                    if "stages" in status_data:
-                        # Only reset if parse stage is completed
-                        if status_data["stages"].get("parse", {}).get("status") == "completed":
-                            status_data["stages"]["chunk"] = {
-                                "status": "waiting",
-                                "metrics": {}
-                            }
-                            status_data["stages"]["index"] = {
-                                "status": "waiting", 
-                                "metrics": {}
-                            }
-                            
-                            # Update current stage to chunk if parse is done
-                            status_data["current_stage"] = "chunk"
-                            status_data["stage_status"] = "waiting"
-                            
-                            document.status_dict = status_data
-                            document.updated_at = datetime.now(timezone.utc)
-                            
-                            session.add(document)
-                            updated_count += 1
-                        else:
-                            logger.debug(f"Skipping document {document.id} - parse stage not completed")
-                    
+                    await dynamic_pipeline_service.execute_pipeline(
+                        pipeline_name="standard_rag",
+                        document_id=document.id,
+                        session=session
+                    )
+                    processed_count += 1
                 except Exception as e:
-                    logger.error(f"Error updating document {document.id}: {e}")
+                    logger.error(f"Error reprocessing document {document.id} with pipeline: {e}")
                     continue
             
-            # Commit all changes
-            session.commit()
+            logger.info(f"Bulk reprocessing completed for {processed_count} documents")
             
-            logger.info(f"Bulk reprocessing initiated for {updated_count} documents")
-            
-            # Close session if we created it
             if should_close:
                 session.close()
             
@@ -98,8 +60,6 @@ class BulkProcessor:
             
         except Exception as e:
             logger.error(f"Error during bulk reprocessing: {e}")
-            if session:
-                session.rollback()
             return False
         finally:
             self.processing = False
@@ -110,73 +70,41 @@ class BulkProcessor:
     
     async def reprocess_documents_by_ids(self, document_ids: List[str], session: Session = None) -> int:
         """
-        Reprocess specific documents by their IDs
-        
-        Args:
-            document_ids: List of document IDs to reprocess
-            session: Database session (optional)
-            
-        Returns:
-            int: Number of documents successfully queued for reprocessing
+        Reprocess specific documents by their IDs using the 'standard_rag' pipeline.
         """
         try:
-            # Use provided session or create new one
             if session is None:
                 session = Session(engine)
                 should_close = True
             else:
                 should_close = False
             
-            # Get documents by IDs
             statement = select(Document).where(Document.id.in_(document_ids))
             documents = session.exec(statement).all()
             
-            logger.info(f"Reprocessing {len(documents)} specific documents")
+            logger.info(f"Reprocessing {len(documents)} documents by IDs using 'standard_rag' pipeline")
             
-            updated_count = 0
+            processed_count = 0
             for document in documents:
                 try:
-                    # Reset chunk and index stages
-                    status_data = document.status_dict
-                    
-                    if "stages" in status_data:
-                        # Only reset if parse stage is completed
-                        if status_data["stages"].get("parse", {}).get("status") == "completed":
-                            status_data["stages"]["chunk"] = {
-                                "status": "waiting",
-                                "metrics": {}
-                            }
-                            status_data["stages"]["index"] = {
-                                "status": "waiting",
-                                "metrics": {}
-                            }
-                            
-                            status_data["current_stage"] = "chunk"
-                            status_data["stage_status"] = "waiting"
-                            
-                            document.status_dict = status_data
-                            document.updated_at = datetime.now(timezone.utc)
-                            
-                            session.add(document)
-                            updated_count += 1
-                
+                    await dynamic_pipeline_service.execute_pipeline(
+                        pipeline_name="standard_rag",
+                        document_id=document.id,
+                        session=session
+                    )
+                    processed_count += 1
                 except Exception as e:
-                    logger.error(f"Error updating document {document.id}: {e}")
+                    logger.error(f"Error reprocessing document {document.id} with pipeline: {e}")
                     continue
             
-            session.commit()
-            
-            # Close session if we created it
             if should_close:
                 session.close()
             
-            logger.info(f"Successfully queued {updated_count} documents for reprocessing")
-            return updated_count
+            logger.info(f"Successfully reprocessed {processed_count} documents")
+            return processed_count
             
         except Exception as e:
             logger.error(f"Error during selective reprocessing: {e}")
-            if session:
-                session.rollback()
             return 0
 
 # Global instance

@@ -2,7 +2,6 @@ import { apiClient, API_ENDPOINTS } from '@/lib/api';
 import {
   SystemStats,
   ChunkingConfig,
-  EmbeddingConfig,
   IndexConfig,
   RetrievalStrategy,
   LLMConfig,
@@ -26,17 +25,6 @@ export const adminService = {
 
     async updateChunkingConfig(config: ChunkingConfig): Promise<{ message: string; config: ChunkingConfig }> {
       const { data } = await apiClient.post(API_ENDPOINTS.ADMIN.CONFIG.CHUNKING, config);
-      return data;
-    },
-
-    // Embedding configuration
-    async getEmbeddingConfig(): Promise<EmbeddingConfig> {
-      const { data } = await apiClient.get(API_ENDPOINTS.ADMIN.CONFIG.EMBEDDING);
-      return data;
-    },
-
-    async updateEmbeddingConfig(config: EmbeddingConfig): Promise<{ message: string; config: EmbeddingConfig }> {
-      const { data } = await apiClient.post(API_ENDPOINTS.ADMIN.CONFIG.EMBEDDING, config);
       return data;
     },
 

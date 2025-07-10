@@ -6,6 +6,13 @@ import { documentsService } from "@/services/documents";
 import { Document, DocumentStageInfo, getOverallStatus } from "@/types/ragpilot";
 import { ParserSelectionModal } from "./ParserSelectionModal";
 import { ParseResultsModal } from "./ParseResultsModal";
+import { PipelineSelectionModal } from "./PipelineSelectionModal";
+
+interface StageError {
+  error_message?: string;
+  failed_at?: string;
+  attempts?: number;
+}
 
 interface DocumentStagesControlProps {
   document: Document;
@@ -104,9 +111,15 @@ const StageDropdown = ({
           ...(stageInfo?.status === "completed" ? [{ id: "view-results", label: "View Parse Results", icon: "eye" }] : []),
           ...(stageInfo?.status === "failed" ? [{ id: "view-error", label: "View Error", icon: "error" }] : [])
         ];
-      case "chunk-index":
+      case "chunk":
         return [
-          { id: "reprocess", label: "Chunk & Index", icon: "process" },
+          { id: "start-chunk", label: "Start Chunking", icon: "play" },
+          ...(stageInfo?.status === "completed" ? [{ id: "view-chunks", label: "View Chunks", icon: "eye" }] : []),
+          ...(stageInfo?.status === "failed" ? [{ id: "view-error", label: "View Error", icon: "error" }] : [])
+        ];
+      case "index":
+        return [
+          { id: "start-index", label: "Start Indexing", icon: "play" },
           ...(stageInfo?.status === "completed" ? [{ id: "view-metrics", label: "View Quality Metrics", icon: "chart" }] : []),
           ...(stageInfo?.status === "failed" ? [{ id: "view-error", label: "View Error", icon: "error" }] : [])
         ];
@@ -210,7 +223,7 @@ const StageDropdown = ({
           {getStatusIcon()}
         </div>
         <span className="font-medium">
-          {stage === "chunk-index" ? "Chunk & Index" : stage.charAt(0).toUpperCase() + stage.slice(1)}
+          {stage.charAt(0).toUpperCase() + stage.slice(1)}
         </span>
         <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -278,7 +291,7 @@ const ErrorModal = ({
 }: {
   isOpen: boolean;
   onClose: () => void;
-  error: any;
+  error: StageError | undefined;
   stage: string;
 }) => {
   if (!isOpen) return null;
@@ -343,15 +356,16 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
   className = "",
   variant = 'compact'
 }) => {
-  const [errorModal, setErrorModal] = useState<{ isOpen: boolean; stage?: string; error?: any }>({
+  const [errorModal, setErrorModal] = useState<{ isOpen: boolean; stage?: string; error?: StageError }>({
     isOpen: false
   });
+  const [isPipelineModalOpen, setIsPipelineModalOpen] = useState(false);
   
   const queryClient = useQueryClient();
 
   // Mutation for starting stages
   const startStageMutation = useMutation({
-    mutationFn: ({ stage }: { stage: 'parse' | 'chunk-index' }) => {
+    mutationFn: ({ stage }: { stage: 'parse' | 'chunk' | 'index' }) => {
       console.log(`Starting ${stage} stage for document ${document.id}`);
       return documentsService.startDocumentStage(document.id, stage);
     },
@@ -359,9 +373,9 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
       console.log('Stage started successfully:', data);
       queryClient.invalidateQueries({ queryKey: ['documents'] });
     },
-    onError: (error: any) => {
+    onError: (error: Error) => {
       console.error('Failed to start stage:', error);
-      alert(`Failed to start stage: ${error?.response?.data?.detail || error?.message || 'Unknown error'}`);
+      alert(`Failed to start stage: ${error.message || 'Unknown error'}`);
     }
   });
 
@@ -372,9 +386,9 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
       queryClient.invalidateQueries({ queryKey: ['documents'] });
       alert('Document reprocessing started successfully!');
     },
-    onError: (error: any) => {
+    onError: (error: Error) => {
       console.error('Failed to reprocess document:', error);
-      alert(`Failed to reprocess document: ${error?.response?.data?.detail || error?.message || 'Unknown error'}`);
+      alert(`Failed to reprocess document: ${error.message || 'Unknown error'}`);
     }
   });
 
@@ -384,25 +398,13 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['documents'] });
     },
-    onError: (error: any) => {
+    onError: (error: Error) => {
       console.error('Failed to delete document:', error);
-      alert(`Failed to delete document: ${error?.response?.data?.detail || error?.message || 'Unknown error'}`);
+      alert(`Failed to delete document: ${error.message || 'Unknown error'}`);
     }
   });
 
   // Mutation for updating document status
-  const updateStatusMutation = useMutation({
-    mutationFn: () => documentsService.updateDocumentStatus(document.id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['documents'] });
-      queryClient.invalidateQueries({ queryKey: ['document', document.id] });
-    },
-    onError: (error: any) => {
-      console.error('Failed to update document status:', error);
-      alert(`Failed to update document status: ${error?.response?.data?.detail || error?.message || 'Unknown error'}`);
-    }
-  });
-
   const handleStageAction = (stage: string, action: string) => {
     console.log(`Handling action: ${action} for stage: ${stage}`);
     
@@ -413,21 +415,24 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
       case "delete":
         handleDelete();
         break;
-      case "reprocess":
+      case "reprocess-chunk-index":
         handleReprocess();
         break;
-      case "refresh-status":
-        updateStatusMutation.mutate();
+      case "start-parse":
+      case "start-chunk":
+      case "start-index":
+        handleRestart(stage);
         break;
       case "view-error":
-        const stageInfo = getStageInfo(stage);
-        if (stageInfo) {
-          setErrorModal({ isOpen: true, stage, error: stageInfo });
-        }
+        setErrorModal({ isOpen: true, error: getStageInfo(stage)?.error, stage: stage });
         break;
       case "view-config":
         // TODO: Implement view parse config modal
         alert('View Parse Config - Coming soon!');
+        break;
+      case "view-chunks":
+        // TODO: Implement view chunks modal
+        alert('View Chunks - Coming soon!');
         break;
       case "view-metrics":
         // TODO: Implement view quality metrics modal
@@ -435,6 +440,13 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
         break;
       case "restart":
         handleRestart(stage);
+        break;
+      case "process-pipeline":
+        setIsPipelineModalOpen(true);
+        break;
+      case "refresh-status":
+        queryClient.invalidateQueries({ queryKey: ['documents', document.id] });
+        queryClient.invalidateQueries({ queryKey: ['documents'] });
         break;
       default:
         console.warn(`Unknown action: ${action}`);
@@ -449,7 +461,8 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
     switch (stage) {
       case "upload": return stages.upload;
       case "parse": return stages.parse;
-      case "chunk-index": return stages["chunk-index"]; // Use the new combined stage
+      case "chunk": return stages.chunk;
+      case "index": return stages.index;
       default: return null;
     }
   };
@@ -458,9 +471,10 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
     try {
       const downloadUrl = await documentsService.getDocumentDownloadUrl(document.id);
       window.open(downloadUrl.download_url, '_blank');
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to get download URL:', error);
-      alert(`Failed to download document: ${error?.response?.data?.detail || error?.message || 'Unknown error'}`);
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      alert(`Failed to download document: ${message}`);
     }
   };
 
@@ -479,9 +493,10 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
   const handleRestart = (stage: string) => {
     if (stage === "parse") {
       startStageMutation.mutate({ stage: 'parse' });
-    } else if (stage === "chunk-index") {
-      // For combined chunk-index stage
-      startStageMutation.mutate({ stage: 'chunk-index' });
+    } else if (stage === "chunk") {
+      startStageMutation.mutate({ stage: 'chunk' });
+    } else if (stage === "index") {
+      startStageMutation.mutate({ stage: 'index' });
     }
   };
 
@@ -536,10 +551,19 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
           />
           
           <StageDropdown
-            stage="chunk-index"
-            stageInfo={stages["chunk-index"]}
-            onAction={(action) => handleStageAction("chunk-index", action)}
-            isLoading={startStageMutation.isPending || reprocessMutation.isPending}
+            stage="chunk"
+            stageInfo={stages.chunk}
+            onAction={(action) => handleStageAction("chunk", action)}
+            isLoading={startStageMutation.isPending}
+            size="large"
+            document={document}
+          />
+          
+          <StageDropdown
+            stage="index"
+            stageInfo={stages.index}
+            onAction={(action) => handleStageAction("index", action)}
+            isLoading={startStageMutation.isPending}
             size="large"
             document={document}
           />
@@ -550,6 +574,16 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
           onClose={() => setErrorModal({ isOpen: false })}
           error={errorModal.error}
           stage={errorModal.stage || ''}
+        />
+
+        <PipelineSelectionModal
+          isOpen={isPipelineModalOpen}
+          onClose={() => setIsPipelineModalOpen(false)}
+          document={document}
+          onPipelineStarted={() => {
+            setIsPipelineModalOpen(false);
+            queryClient.invalidateQueries({ queryKey: ['documents'] });
+          }}
         />
       </div>
     );
@@ -576,10 +610,18 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
         />
         
         <StageDropdown
-          stage="chunk-index"
-          stageInfo={stages["chunk-index"]}
-          onAction={(action) => handleStageAction("chunk-index", action)}
-          isLoading={startStageMutation.isPending || reprocessMutation.isPending}
+          stage="chunk"
+          stageInfo={stages.chunk}
+          onAction={(action) => handleStageAction("chunk", action)}
+          isLoading={startStageMutation.isPending}
+          document={document}
+        />
+        
+        <StageDropdown
+          stage="index"
+          stageInfo={stages.index}
+          onAction={(action) => handleStageAction("index", action)}
+          isLoading={startStageMutation.isPending}
           document={document}
         />
       </div>

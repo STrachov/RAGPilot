@@ -4,37 +4,12 @@ import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { configService } from "@/services/config";
+import { documentsService } from "@/services/documents";
+import { GlobalConfig, ParseConfig, ChunkingConfig, IndexConfig, ChunkingStrategy, IndexType, Pipeline, PipelineInfo } from "@/types/ragpilot";
 
 interface GlobalConfigModalProps {
   isOpen: boolean;
   onClose: () => void;
-}
-
-interface ChunkConfig {
-  strategy: string;
-  chunk_size: number;
-  chunk_overlap: number;
-  min_chunk_size: number;
-  max_chunk_size: number;
-  separators: string[];
-  use_semantic_chunking: boolean;
-  semantic_threshold: number;
-}
-
-interface IndexConfig {
-  model_name: string;
-  model_type: string;
-  dimensions: number;
-  index_type: string;
-  similarity_metric: string;
-  use_vector_db: boolean;
-  use_bm25: boolean;
-  top_n_retrieval: number;
-}
-
-interface GlobalConfig {
-  chunk_config: ChunkConfig;
-  index_config: IndexConfig;
 }
 
 export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
@@ -42,13 +17,19 @@ export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
   onClose
 }) => {
   const [config, setConfig] = useState<GlobalConfig | null>(null);
-  const [isApplyingToAll, setIsApplyingToAll] = useState(false);
   const queryClient = useQueryClient();
 
   // Fetch current global configuration
-  const { data: globalConfig, isLoading } = useQuery({
+  const { data: globalConfig, isLoading: isLoadingConfig } = useQuery({
     queryKey: ['globalConfig'],
     queryFn: () => configService.getGlobalConfig(),
+    enabled: isOpen,
+  });
+
+  // Fetch available pipelines
+  const { data: availablePipelines, isLoading: isLoadingPipelines } = useQuery({
+    queryKey: ['availablePipelines'],
+    queryFn: () => documentsService.getAvailablePipelines(),
     enabled: isOpen,
   });
 
@@ -65,6 +46,7 @@ export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['globalConfig'] });
       alert('Global configuration updated successfully!');
+      onClose();
     },
     onError: (error: any) => {
       console.error('Failed to update global configuration:', error);
@@ -72,34 +54,31 @@ export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
     }
   });
 
-  // Mutation for applying configuration to all documents
-  const applyToAllMutation = useMutation({
-    mutationFn: () => configService.applyGlobalConfigToAll(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['documents'] });
-      setIsApplyingToAll(false);
-      alert('Global configuration is being applied to all documents. This may take a few minutes.');
-    },
-    onError: (error: any) => {
-      console.error('Failed to apply configuration to all documents:', error);
-      setIsApplyingToAll(false);
-      alert(`Failed to apply configuration: ${error?.response?.data?.detail || error?.message || 'Unknown error'}`);
-    }
-  });
-
   const handleSave = () => {
     if (!config) return;
     updateConfigMutation.mutate(config);
   };
-
-  const handleApplyToAll = () => {
-    if (confirm('This will reprocess all documents with the current global configuration. This may take a while. Continue?')) {
-      setIsApplyingToAll(true);
-      applyToAllMutation.mutate();
-    }
+  
+  const updateConfigField = (field: keyof GlobalConfig, value: any) => {
+    if (!config) return;
+    setConfig({
+      ...config,
+      [field]: value
+    });
   };
 
-  const updateChunkConfig = (field: keyof ChunkConfig, value: any) => {
+  const updateParseConfig = (field: keyof ParseConfig, value: any) => {
+    if (!config) return;
+    setConfig({
+      ...config,
+      parse_config: {
+        ...config.parse_config,
+        [field]: value
+      }
+    });
+  };
+
+  const updateChunkConfig = (field: keyof ChunkingConfig, value: any) => {
     if (!config) return;
     setConfig({
       ...config,
@@ -122,6 +101,8 @@ export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
   };
 
   if (!isOpen) return null;
+
+  const isLoading = isLoadingConfig || isLoadingPipelines;
 
   const modalContent = (
     <div className="fixed inset-0 flex items-center justify-center p-4" style={{ zIndex: 9999999, backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
@@ -148,6 +129,152 @@ export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
             </div>
           ) : config ? (
             <div className="space-y-8">
+              {/* Pipeline Configuration */}
+              <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-6">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                  Pipeline Configuration
+                </h3>
+                <div className="space-y-4">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Default Pipeline for Uploads
+                  </label>
+                  <div className="space-y-3">
+                    {availablePipelines && Object.values(availablePipelines).map((pipeline: PipelineInfo) => (
+                      <div key={pipeline.name} className="flex items-start p-3 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                        <input
+                          id={`pipeline-${pipeline.name}`}
+                          type="radio"
+                          name="default_pipeline"
+                          value={pipeline.name}
+                          checked={config.default_pipeline_name === pipeline.name}
+                          onChange={(e) => updateConfigField('default_pipeline_name', e.target.value)}
+                          className="h-4 w-4 mt-1 text-blue-600 focus:ring-blue-500 border-gray-300"
+                        />
+                        <div className="ml-3 text-sm">
+                          <label htmlFor={`pipeline-${pipeline.name}`} className="font-medium text-gray-900 dark:text-white">
+                            {pipeline.name}
+                          </label>
+                          <p className="text-gray-500 dark:text-gray-400">
+                            {pipeline.description}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Parse Configuration */}
+              <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-6">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                  Parse Configuration
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Parser Type
+                    </label>
+                    <select
+                      value={config.parse_config.parser_type}
+                      onChange={(e) => updateParseConfig('parser_type', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    >
+                      <option value="docling">Docling</option>
+                      <option value="marker">Marker</option>
+                      <option value="unstructured">Unstructured</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      OCR Language
+                    </label>
+                    <select
+                      value={config.parse_config.ocr_language}
+                      onChange={(e) => updateParseConfig('ocr_language', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    >
+                      <option value="auto">Auto</option>
+                      <option value="en">English</option>
+                      <option value="es">Spanish</option>
+                      <option value="fr">French</option>
+                      <option value="de">German</option>
+                      <option value="it">Italian</option>
+                      <option value="pt">Portuguese</option>
+                      <option value="ru">Russian</option>
+                      <option value="zh">Chinese</option>
+                      <option value="ja">Japanese</option>
+                      <option value="ko">Korean</option>
+                    </select>
+                  </div>
+
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="do-ocr"
+                      checked={config.parse_config.do_ocr}
+                      onChange={(e) => updateParseConfig('do_ocr', e.target.checked)}
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    />
+                    <label htmlFor="do-ocr" className="ml-2 text-sm text-gray-700 dark:text-gray-300">
+                      Enable OCR
+                    </label>
+                  </div>
+
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="extract-tables"
+                      checked={config.parse_config.extract_tables}
+                      onChange={(e) => updateParseConfig('extract_tables', e.target.checked)}
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    />
+                    <label htmlFor="extract-tables" className="ml-2 text-sm text-gray-700 dark:text-gray-300">
+                      Extract Tables
+                    </label>
+                  </div>
+
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="extract-images"
+                      checked={config.parse_config.extract_images}
+                      onChange={(e) => updateParseConfig('extract_images', e.target.checked)}
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    />
+                    <label htmlFor="extract-images" className="ml-2 text-sm text-gray-700 dark:text-gray-300">
+                      Extract Images
+                    </label>
+                  </div>
+
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="preserve-formatting"
+                      checked={config.parse_config.preserve_formatting}
+                      onChange={(e) => updateParseConfig('preserve_formatting', e.target.checked)}
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    />
+                    <label htmlFor="preserve-formatting" className="ml-2 text-sm text-gray-700 dark:text-gray-300">
+                      Preserve Formatting
+                    </label>
+                  </div>
+
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="handle-multi-column"
+                      checked={config.parse_config.handle_multi_column}
+                      onChange={(e) => updateParseConfig('handle_multi_column', e.target.checked)}
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    />
+                    <label htmlFor="handle-multi-column" className="ml-2 text-sm text-gray-700 dark:text-gray-300">
+                      Handle Multi-Column Layout
+                    </label>
+                  </div>
+                </div>
+              </div>
+
               {/* Chunk Configuration */}
               <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-6">
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
@@ -160,12 +287,13 @@ export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
                     </label>
                     <select
                       value={config.chunk_config.strategy}
-                      onChange={(e) => updateChunkConfig('strategy', e.target.value)}
+                      onChange={(e) => updateChunkConfig('strategy', e.target.value as ChunkingStrategy)}
                       className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                     >
-                      <option value="recursive">Recursive</option>
-                      <option value="semantic">Semantic</option>
-                      <option value="fixed">Fixed Size</option>
+                      <option value={ChunkingStrategy.FIXED_SIZE}>Fixed Size</option>
+                      <option value={ChunkingStrategy.SENTENCE}>Sentence</option>
+                      <option value={ChunkingStrategy.PARAGRAPH}>Paragraph</option>
+                      <option value={ChunkingStrategy.RECURSIVE}>Recursive</option>
                     </select>
                   </div>
 
@@ -200,13 +328,26 @@ export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
                   <div className="flex items-center">
                     <input
                       type="checkbox"
-                      id="semantic-chunking"
-                      checked={config.chunk_config.use_semantic_chunking}
-                      onChange={(e) => updateChunkConfig('use_semantic_chunking', e.target.checked)}
+                      id="preserve-table-structure"
+                      checked={config.chunk_config.preserve_table_structure}
+                      onChange={(e) => updateChunkConfig('preserve_table_structure', e.target.checked)}
                       className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                     />
-                    <label htmlFor="semantic-chunking" className="ml-2 text-sm text-gray-700 dark:text-gray-300">
-                      Use Semantic Chunking
+                    <label htmlFor="preserve-table-structure" className="ml-2 text-sm text-gray-700 dark:text-gray-300">
+                      Preserve Table Structure
+                    </label>
+                  </div>
+
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="serialize-tables"
+                      checked={config.chunk_config.serialize_tables}
+                      onChange={(e) => updateChunkConfig('serialize_tables', e.target.checked)}
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    />
+                    <label htmlFor="serialize-tables" className="ml-2 text-sm text-gray-700 dark:text-gray-300">
+                      Serialize Tables
                     </label>
                   </div>
                 </div>
@@ -227,9 +368,10 @@ export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
                       onChange={(e) => updateIndexConfig('model_name', e.target.value)}
                       className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                     >
-                      <option value="sentence-transformers/all-MiniLM-L6-v2">all-MiniLM-L6-v2 (384d)</option>
-                      <option value="sentence-transformers/all-mpnet-base-v2">all-mpnet-base-v2 (768d)</option>
-                      <option value="text-embedding-ada-002">OpenAI Ada-002 (1536d)</option>
+                      <option value="sentence-transformers/all-MiniLM-L6-v2">all-MiniLM-L6-v2</option>
+                      <option value="sentence-transformers/all-mpnet-base-v2">all-mpnet-base-v2</option>
+                      <option value="text-embedding-3-small">OpenAI text-embedding-3-small</option>
+                      <option value="text-embedding-3-large">OpenAI text-embedding-3-large</option>
                     </select>
                   </div>
 
@@ -239,13 +381,29 @@ export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
                     </label>
                     <select
                       value={config.index_config.index_type}
-                      onChange={(e) => updateIndexConfig('index_type', e.target.value)}
+                      onChange={(e) => updateIndexConfig('index_type', e.target.value as IndexType)}
                       className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                     >
-                      <option value="faiss">FAISS</option>
-                      <option value="chroma">Chroma</option>
-                      <option value="pinecone">Pinecone</option>
+                      <option value={IndexType.FAISS}>FAISS</option>
+                      <option value={IndexType.QDRANT}>Qdrant</option>
+                      <option value={IndexType.ELASTICSEARCH}>Elasticsearch</option>
+                      <option value={IndexType.PINECONE}>Pinecone</option>
+                      <option value={IndexType.WEAVIATE}>Weaviate</option>
                     </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Dimensions
+                    </label>
+                    <input
+                      type="number"
+                      value={config.index_config.dimensions}
+                      onChange={(e) => updateIndexConfig('dimensions', parseInt(e.target.value))}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                      min="128"
+                      max="4096"
+                    />
                   </div>
 
                   <div>
@@ -280,19 +438,6 @@ export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
                   <div className="flex items-center">
                     <input
                       type="checkbox"
-                      id="use-bm25"
-                      checked={config.index_config.use_bm25}
-                      onChange={(e) => updateIndexConfig('use_bm25', e.target.checked)}
-                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                    />
-                    <label htmlFor="use-bm25" className="ml-2 text-sm text-gray-700 dark:text-gray-300">
-                      Use BM25 (Hybrid Retrieval)
-                    </label>
-                  </div>
-
-                  <div className="flex items-center">
-                    <input
-                      type="checkbox"
                       id="use-vector-db"
                       checked={config.index_config.use_vector_db}
                       onChange={(e) => updateIndexConfig('use_vector_db', e.target.checked)}
@@ -302,30 +447,35 @@ export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
                       Use Vector Database
                     </label>
                   </div>
+
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="use-bm25"
+                      checked={config.index_config.use_bm25}
+                      onChange={(e) => updateIndexConfig('use_bm25', e.target.checked)}
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    />
+                    <label htmlFor="use-bm25" className="ml-2 text-sm text-gray-700 dark:text-gray-300">
+                      Use BM25 (Hybrid Search)
+                    </label>
+                  </div>
                 </div>
               </div>
 
               {/* Action Buttons */}
-              <div className="flex justify-between items-center pt-6 border-t border-gray-200 dark:border-gray-700">
-                <button
-                  onClick={handleApplyToAll}
-                  disabled={applyToAllMutation.isPending || isApplyingToAll}
-                  className="px-4 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isApplyingToAll ? 'Applying to All...' : 'Apply to All Documents'}
-                </button>
-
+              <div className="flex justify-end pt-6 border-t border-gray-200 dark:border-gray-700">
                 <div className="flex space-x-3">
                   <button
                     onClick={onClose}
-                    className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700"
+                    className="px-4 py-2 bg-gray-300 hover:bg-gray-400 dark:bg-gray-600 dark:hover:bg-gray-500 text-gray-700 dark:text-gray-200 rounded-md font-medium transition-colors"
                   >
                     Cancel
                   </button>
                   <button
                     onClick={handleSave}
                     disabled={updateConfigMutation.isPending}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-md font-medium transition-colors"
                   >
                     {updateConfigMutation.isPending ? 'Saving...' : 'Save Configuration'}
                   </button>
@@ -333,8 +483,8 @@ export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
               </div>
             </div>
           ) : (
-            <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-              Failed to load configuration
+            <div className="flex justify-center py-8">
+              <p className="text-gray-500 dark:text-gray-400">Failed to load configuration</p>
             </div>
           )}
         </div>
@@ -342,5 +492,5 @@ export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
     </div>
   );
 
-  return createPortal(modalContent, document.body);
+  return typeof window !== 'undefined' ? createPortal(modalContent, document.body) : null;
 }; 

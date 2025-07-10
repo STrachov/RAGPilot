@@ -1,40 +1,12 @@
 import { apiClient } from '@/lib/api';
+import { ParseConfig, ChunkingConfig, IndexConfig, GlobalConfig } from '@/types/ragpilot';
 
-export interface ChunkConfig {
-  strategy: string;
-  chunk_size: number;
-  chunk_overlap: number;
-  min_chunk_size: number;
-  max_chunk_size: number;
-  separators: string[];
-  use_semantic_chunking: boolean;
-  semantic_threshold: number;
-}
-
-export interface IndexConfig {
-  model_name: string;
-  model_type: string;
-  dimensions: number;
-  index_type: string;
-  similarity_metric: string;
-  use_vector_db: boolean;
-  use_bm25: boolean;
-  top_n_retrieval: number;
-}
-
-export interface GlobalConfig {
-  chunk_config: ChunkConfig;
-  index_config: IndexConfig;
-}
-
-export interface BulkProcessingStatus {
-  is_running: boolean;
-  total_documents: number;
-  processed_documents: number;
-  failed_documents: number;
-  current_document?: string;
-  started_at?: string;
-  estimated_completion?: string;
+export interface ConfigStatus {
+  config_file_exists: boolean;
+  config_file_path: string;
+  config_file_size: number;
+  cache_status: string;
+  last_modified?: number;
 }
 
 class ConfigService {
@@ -55,9 +27,17 @@ class ConfigService {
   }
 
   /**
+   * Get current parse configuration
+   */
+  async getParseConfig(): Promise<ParseConfig> {
+    const response = await apiClient.get('/config/parse');
+    return response.data;
+  }
+
+  /**
    * Get current chunk configuration
    */
-  async getChunkConfig(): Promise<ChunkConfig> {
+  async getChunkConfig(): Promise<ChunkingConfig> {
     const response = await apiClient.get('/config/chunk');
     return response.data;
   }
@@ -71,26 +51,34 @@ class ConfigService {
   }
 
   /**
-   * Apply current global configuration to all documents
-   */
-  async applyGlobalConfigToAll(): Promise<{ message: string }> {
-    const response = await apiClient.post('/config/apply-to-all');
-    return response.data;
-  }
-
-  /**
-   * Get bulk processing status
-   */
-  async getBulkProcessingStatus(): Promise<BulkProcessingStatus> {
-    const response = await apiClient.get('/config/bulk-status');
-    return response.data;
-  }
-
-  /**
    * Invalidate configuration cache (admin only)
    */
   async invalidateCache(): Promise<{ message: string }> {
     const response = await apiClient.post('/config/invalidate-cache');
+    return response.data;
+  }
+
+  /**
+   * Force reload configuration from file
+   */
+  async reloadConfig(): Promise<{ message: string }> {
+    const response = await apiClient.post('/config/reload');
+    return response.data;
+  }
+
+  /**
+   * Create a backup of current configuration
+   */
+  async backupConfig(): Promise<{ message: string }> {
+    const response = await apiClient.post('/config/backup');
+    return response.data;
+  }
+
+  /**
+   * Get configuration system status
+   */
+  async getConfigStatus(): Promise<ConfigStatus> {
+    const response = await apiClient.get('/config/status');
     return response.data;
   }
 }

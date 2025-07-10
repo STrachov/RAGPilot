@@ -7,8 +7,8 @@ from sqlmodel import Field, SQLModel, Relationship
 from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey
 from pydantic import BaseModel, field_validator
 
-from app.core.config.constants import DocumentSourceType, DocumentStatus, ProcessingStage, StageStatus
-from app.core.config.processing_config import ParseConfig, DEFAULT_PARSE_CONFIG
+from app.core.config.constants import DocumentSourceType
+from app.core.config.constants import ParseConfig, ChunkConfig, IndexConfig
 
 # Forward reference for circular imports
 if TYPE_CHECKING:
@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     RetrievalResult_type = RetrievalResult
 else:
     RetrievalResult_type = "RetrievalResult"
-
 
 # Pydantic models for API responses
 class DocumentStageInfo(BaseModel):
@@ -31,7 +30,7 @@ class DocumentStageInfo(BaseModel):
     attempts: Optional[int] = None
     config: Optional[Dict[str, Any]] = None
     result: Optional[Dict[str, Any]] = None  # For storing RAGParser response
-    
+    execution_id: Optional[str] = None
     # Additional fields found in actual database status
     parser_used: Optional[str] = None
     ragparser_task_id: Optional[str] = None
@@ -136,12 +135,12 @@ class Document(SQLModel, table=True):
         config_data = parse_stage.get("config", {})
         
         if not config_data:
-            return DEFAULT_PARSE_CONFIG
+            return ParseConfig().model_dump()
         
         try:
             return ParseConfig(**config_data)
         except (TypeError, ValueError):
-            return DEFAULT_PARSE_CONFIG
+            return ParseConfig().model_dump()
     
     @parse_config.setter
     def parse_config(self, value: ParseConfig):
@@ -155,7 +154,7 @@ class Document(SQLModel, table=True):
             status_dict["stages"]["parse"] = {}
             
         # Set the config
-        status_dict["stages"]["parse"]["config"] = value.dict()
+        status_dict["stages"]["parse"]["config"] = value.model_dump()
         self.status_dict = status_dict
     
     @property
@@ -216,7 +215,7 @@ class Document(SQLModel, table=True):
     def status_dict(self, value: Dict[str, Any]):
         """Set status from a dictionary"""
         self.status = json.dumps(value)
-    
+
     def _get_default_status_structure(self) -> Dict[str, Any]:
         """Get the default status structure with simplified format"""
         return {
@@ -229,30 +228,15 @@ class Document(SQLModel, table=True):
                 },
                 "parse": {
                     "status": "waiting",
-                    "config": {
-                        "do_ocr": True,
-                        "extract_tables": True,
-                        "extract_images": False,
-                        "ocr_language": "en"
-                    }
+                    "config": ParseConfig().model_dump()
                 },
                 "chunk": {
                     "status": "waiting",
-                    "config": {
-                        "strategy": "recursive",
-                        "chunk_size": 1000,
-                        "chunk_overlap": 200
-                    }
+                    "config": ChunkConfig().model_dump()
                 },
                 "index": {
                     "status": "waiting",
-                    "config": {
-                        "model_name": "sentence-transformers/all-MiniLM-L6-v2",
-                        "model_type": "sentence-transformers",
-                        "dimensions": 384,
-                        "index_type": "faiss",
-                        "similarity_metric": "cosine"
-                    }
+                    "config": IndexConfig().model_dump()
                 }
             }
         }

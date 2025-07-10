@@ -3,6 +3,7 @@
 
 # API Settings
 SECRET_KEY=your-secret-key-change-in-production
+SERVER_HOST=http://localhost:8000
 FRONTEND_HOST=http://localhost:3000
 ENVIRONMENT=local
 

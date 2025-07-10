@@ -1,0 +1,28 @@
+{
+  "parse_config": {
+    "parser_type": "docling",
+    "do_ocr": true,
+    "extract_tables": false,
+    "extract_images": false,
+    "ocr_language": "auto",
+    "preserve_formatting": true,
+    "handle_multi_column": true
+  },
+  "chunk_config": {
+    "strategy": "recursive",
+    "chunk_size": 1000,
+    "chunk_overlap": 200,
+    "preserve_table_structure": true,
+    "serialize_tables": false
+  },
+  "index_config": {
+    "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+    "dimensions": 384,
+    "index_type": "faiss",
+    "similarity_metric": "cosine",
+    "use_vector_db": true,
+    "use_bm25": true,
+    "top_n_retrieval": 10
+  },
+  "default_pipeline_name": "standard_rag"
+}

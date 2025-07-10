@@ -9,6 +9,10 @@ from app.core.models.user import User
 from app.core.models.refresh_token import RefreshToken
 from app.core.models.document import Document, DocumentChunk
 from app.core.models.monitoring import Query, RetrievalResult, Response, Feedback
+from app.core.models.pipeline import (
+    Pipeline, PipelineStage, PipelineStageType, PipelineExecution, 
+    StageResult, StageStatus
+)
 
 __all__ = [
     "UserRole",
@@ -20,5 +24,11 @@ __all__ = [
     "Query",
     "RetrievalResult",
     "Response",
-    "Feedback"
+    "Feedback",
+    "Pipeline",
+    "PipelineStage",
+    "PipelineStageType",
+    "PipelineExecution",
+    "StageResult",
+    "StageStatus"
 ]

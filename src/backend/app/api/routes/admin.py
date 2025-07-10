@@ -5,14 +5,11 @@ from datetime import datetime, timezone, timedelta
 
 from app.api.deps import CurrentUser, SessionDep, get_user_with_permission
 from app.core.config.constants import (
-    DEFAULT_CHUNKING_CONFIG,
-    DEFAULT_EMBEDDING_CONFIG,
-    DEFAULT_INDEX_CONFIG,
     DEFAULT_RETRIEVAL_STRATEGY,
     DEFAULT_LLM_CONFIG,
     DEFAULT_PROMPT_TEMPLATES,
+    ChunkConfig, IndexConfig,
     ChunkingStrategy,
-    EmbeddingModel,
     IndexType,
     RetrievalMethod,
     LLMProvider
@@ -87,15 +84,7 @@ async def get_chunking_config(
     current_user: AdminUser,
 ) -> Any:
     """Get chunking configuration"""
-    return DEFAULT_CHUNKING_CONFIG
-
-
-@router.get("/config/embedding")
-async def get_embedding_config(
-    current_user: AdminUser,
-) -> Any:
-    """Get embedding configuration"""
-    return DEFAULT_EMBEDDING_CONFIG
+    return ChunkConfig().model_dump()
 
 
 @router.get("/config/index")
@@ -103,8 +92,7 @@ async def get_index_config(
     current_user: AdminUser,
 ) -> Any:
     """Get index configuration"""
-    return DEFAULT_INDEX_CONFIG
-
+    return IndexConfig().model_dump()
 
 @router.get("/config/retrieval")
 async def get_retrieval_config(
@@ -130,17 +118,9 @@ async def get_prompt_templates(
     return DEFAULT_PROMPT_TEMPLATES
 
 
-class ChunkingConfigUpdate(BaseModel):
-    """Chunking configuration update"""
-    strategy: ChunkingStrategy
-    chunk_size: int
-    chunk_overlap: int
-    separators: Optional[List[str]] = None
-
-
 @router.post("/config/chunking")
 async def update_chunking_config(
-    config: ChunkingConfigUpdate,
+    config: ChunkConfig,
     current_user: AdminWriteUser,
 ) -> Any:
     """Update chunking configuration"""
@@ -152,40 +132,9 @@ async def update_chunking_config(
     }
 
 
-class EmbeddingConfigUpdate(BaseModel):
-    """Embedding configuration update"""
-    model_name: str
-    model_type: EmbeddingModel
-    dimensions: int
-    api_key: Optional[str] = None
-    
-    model_config = {"protected_namespaces": ()}
-
-
-@router.post("/config/embedding")
-async def update_embedding_config(
-    config: EmbeddingConfigUpdate,
-    current_user: AdminWriteUser,
-) -> Any:
-    """Update embedding configuration"""
-    return {
-        "message": "Embedding configuration updated successfully",
-        "config": config
-    }
-
-
-class IndexConfigUpdate(BaseModel):
-    """Index configuration update"""
-    name: str
-    index_type: IndexType
-    dimensions: int
-    similarity_metric: str = "cosine"
-    connection_params: Optional[Dict[str, Any]] = None
-
-
 @router.post("/config/index")
 async def update_index_config(
-    config: IndexConfigUpdate,
+    config: IndexConfig,
     current_user: AdminWriteUser,
 ) -> Any:
     """Update index configuration"""

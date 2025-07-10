@@ -2,7 +2,7 @@
 
 //import type { Metadata } from "next";
 import React, { useState, useEffect, useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { 
   DocumentStatusChart,
   RecentDocuments,
@@ -38,6 +38,25 @@ export default function DocumentsPage() {
   const [selectedDocuments, setSelectedDocuments] = useState<string[]>([]);
 
   const queryClient = useQueryClient();
+
+  // Mutation for bulk reprocessing
+  const bulkReprocessMutation = useMutation({
+    mutationFn: (documentIds: string[]) => documentsService.bulkReprocess(documentIds),
+    onSuccess: (data) => {
+      setNotification({
+        type: 'success',
+        message: data.message || `${data.processed.length} documents queued for reprocessing.`,
+      });
+      setSelectedDocuments([]);
+      queryClient.invalidateQueries({ queryKey: ['documents'] });
+    },
+    onError: (error: any) => {
+      setNotification({
+        type: 'error',
+        message: error.message || 'Failed to reprocess selected documents',
+      });
+    },
+  });
 
   // Set page title
   useEffect(() => {
@@ -207,21 +226,7 @@ export default function DocumentsPage() {
 
   const handleBulkReprocess = async () => {
     if (selectedDocuments.length === 0) return;
-    
-    try {
-      // TODO: Implement bulk reprocess API call
-      setNotification({
-        type: 'success',
-        message: `${selectedDocuments.length} documents queued for reprocessing`,
-      });
-      setSelectedDocuments([]);
-      queryClient.invalidateQueries({ queryKey: ['documents'] });
-    } catch (error) {
-      setNotification({
-        type: 'error',
-        message: 'Failed to reprocess selected documents',
-      });
-    }
+    bulkReprocessMutation.mutate(selectedDocuments);
   };
 
   const handleBulkDownload = async () => {
@@ -238,6 +243,17 @@ export default function DocumentsPage() {
         type: 'error',
         message: 'Failed to download selected documents',
       });
+    }
+  };
+
+  const handleBulkPipelineProcess = () => {
+    if (selectedDocuments.length === 0) {
+      alert('Please select at least one document to process.');
+      return;
+    }
+
+    if (window.confirm(`Are you sure you want to reprocess ${selectedDocuments.length} documents using the default pipeline? This action cannot be undone.`)) {
+      bulkReprocessMutation.mutate(selectedDocuments);
     }
   };
 
@@ -280,6 +296,13 @@ export default function DocumentsPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
             Global Settings
+          </button>
+          <button
+            onClick={handleBulkPipelineProcess}
+            disabled={selectedDocuments.length === 0}
+            className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            Process with Pipeline
           </button>
           <button
             onClick={() => setIsUploadModalOpen(true)}

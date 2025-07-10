@@ -1,67 +1,71 @@
+"""
+Configuration management routes
+Handles global processing configuration using file-based storage
+"""
+
 from typing import Dict, Any
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
-from sqlmodel import Session
+from fastapi import APIRouter, Depends, HTTPException
 
-from app.api.deps import SessionDep, get_current_user
-from app.core.models.user import User
-from app.core.config.processing_config import GlobalProcessingConfig, ChunkConfig, IndexConfig
+from app.core.config.constants import GlobalProcessingConfig, ChunkConfig, IndexConfig, ParseConfig
 from app.core.services.config_service import config_service
-from app.core.services.bulk_processor import bulk_processor
+from app.api.deps import get_current_admin
+from app.core.models.user import User
 
-router = APIRouter(prefix="/config", tags=["configuration"])
-
-async def get_current_user_dep(
-    current_user: User = Depends(get_current_user)
-) -> User:
-    """Dependency to get current user"""
-    return current_user
+router = APIRouter()
 
 @router.get("/global", response_model=Dict[str, Any])
 async def get_global_config(
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(get_current_admin)
 ) -> Dict[str, Any]:
     """
     Get the current global processing configuration
     
     Returns:
-        Dict containing global chunk and index configuration
+        Dict containing global parse, chunk and index configuration
     """
     try:
         global_config = config_service.get_global_config()
         return {
-            "chunk_config": global_config.chunk_config.dict(),
-            "index_config": global_config.index_config.dict()
+            "parse_config": global_config.parse_config.model_dump(),
+            "chunk_config": global_config.chunk_config.model_dump(),
+            "index_config": global_config.index_config.model_dump()
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get global configuration: {str(e)}")
 
-@router.put("/global")
+@router.put("/global", response_model=Dict[str, str])
 async def update_global_config(
-    config_data: Dict[str, Any],
-    session: SessionDep,
-    current_user: User = Depends(get_current_user_dep)
+    config: GlobalProcessingConfig,
+    current_user: User = Depends(get_current_admin)
 ) -> Dict[str, str]:
-    """Update global processing configuration"""
+    """
+    Update the global processing configuration
+    
+    Args:
+        config: New global configuration
+        
+    Returns:
+        Success message
+    """
     try:
-        # Parse the configuration
-        global_config = GlobalProcessingConfig.from_dict(config_data)
-        
-        # Update the configuration
-        success = config_service.update_global_config(global_config)
-        
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to update global configuration")
-        
+        config_service.update_global_config(config)
         return {"message": "Global configuration updated successfully"}
-        
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid configuration: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update configuration: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update global configuration: {str(e)}")
+
+@router.get("/parse", response_model=Dict[str, Any])
+async def get_parse_config(
+    current_user: User = Depends(get_current_admin)
+) -> Dict[str, Any]:
+    """Get current parse configuration"""
+    try:
+        return config_service.get_parse_config()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get parse configuration: {str(e)}")
 
 @router.get("/chunk", response_model=Dict[str, Any])
 async def get_chunk_config(
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(get_current_admin)
 ) -> Dict[str, Any]:
     """Get current chunk configuration"""
     try:
@@ -71,7 +75,7 @@ async def get_chunk_config(
 
 @router.get("/index", response_model=Dict[str, Any])
 async def get_index_config(
-    current_user: User = Depends(get_current_user_dep)
+    current_user: User = Depends(get_current_admin)
 ) -> Dict[str, Any]:
     """Get current index configuration"""
     try:
@@ -79,48 +83,68 @@ async def get_index_config(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get index configuration: {str(e)}")
 
-@router.post("/apply-to-all")
-async def apply_global_config_to_all(
-    background_tasks: BackgroundTasks,
-    session: SessionDep,
-    current_user: User = Depends(get_current_user_dep)
+@router.post("/invalidate-cache", response_model=Dict[str, str])
+async def invalidate_cache(
+    current_user: User = Depends(get_current_admin)
 ) -> Dict[str, str]:
-    """Apply current global configuration to all documents"""
-    try:
-        # Start bulk processing in background
-        background_tasks.add_task(
-            bulk_processor.apply_global_config_to_all_documents
-        )
-        
-        return {
-            "message": "Bulk reprocessing started. All documents will be reprocessed with current global configuration."
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to start bulk processing: {str(e)}")
-
-@router.post("/invalidate-cache")
-async def invalidate_config_cache(
-    current_user: User = Depends(get_current_user_dep)
-) -> Dict[str, str]:
-    """Invalidate the configuration cache (admin only)"""
-    # Check if user is admin
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
+    """
+    Invalidate configuration cache (admin only)
+    Forces reload from file on next access
+    """
     try:
         config_service.invalidate_cache()
         return {"message": "Configuration cache invalidated successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to invalidate cache: {str(e)}")
 
-@router.get("/bulk-status")
-async def get_bulk_processing_status(
-    current_user: User = Depends(get_current_user_dep)
-) -> Dict[str, Any]:
-    """Get status of bulk processing operations"""
+@router.post("/reload", response_model=Dict[str, str])
+async def reload_config(
+    current_user: User = Depends(get_current_admin)
+) -> Dict[str, str]:
+    """
+    Force reload configuration from file
+    """
     try:
-        status = bulk_processor.get_processing_status()
+        config_service.reload_config()
+        return {"message": "Configuration reloaded successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reload configuration: {str(e)}")
+
+@router.post("/backup", response_model=Dict[str, str])
+async def backup_config(
+    current_user: User = Depends(get_current_admin)
+) -> Dict[str, str]:
+    """
+    Create a backup of current configuration
+    """
+    try:
+        backup_path = config_service.backup_config()
+        return {"message": f"Configuration backed up to {backup_path}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to backup configuration: {str(e)}")
+
+@router.get("/status", response_model=Dict[str, Any])
+async def get_config_status(
+    current_user: User = Depends(get_current_admin)
+) -> Dict[str, Any]:
+    """
+    Get configuration system status
+    """
+    try:
+        import os
+        config_file_path = config_service.config_file
+        
+        status = {
+            "config_file_exists": config_file_path.exists(),
+            "config_file_path": str(config_file_path),
+            "config_file_size": os.path.getsize(config_file_path) if config_file_path.exists() else 0,
+            "cache_status": "loaded" if config_service._config_cache is not None else "empty"
+        }
+        
+        if config_file_path.exists():
+            stat = os.stat(config_file_path)
+            status["last_modified"] = stat.st_mtime
+        
         return status
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get bulk processing status: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Failed to get configuration status: {str(e)}") 

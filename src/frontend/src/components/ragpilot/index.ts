@@ -6,4 +6,7 @@ export { QuickActions } from './QuickActions';
 export { ParserSelectionModal } from './ParserSelectionModal';
 export { DocumentActionsDropdown } from './DocumentActionsDropdown';
 export { GlobalConfigModal } from './GlobalConfigModal';
-export { DocumentAnalysisStatus } from './DocumentAnalysisStatus'; 
+export { DocumentAnalysisStatus } from './DocumentAnalysisStatus';
+export { PipelineSelectionModal } from './PipelineSelectionModal';
+export { PipelineStatusMonitor } from './PipelineStatusMonitor';
+export { ParseResultsModal } from './ParseResultsModal'; 

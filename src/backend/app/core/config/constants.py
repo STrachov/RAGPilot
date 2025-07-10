@@ -1,6 +1,6 @@
 from enum import Enum, auto
-from typing import Dict, Any, List, Set
-
+from typing import Dict, Any, List, Set, Optional
+from pydantic import BaseModel, Field
 
 class UserRole(str, Enum):
     """User roles in the system"""
@@ -49,6 +49,13 @@ class DocumentSourceType(str, Enum):
     OTHER = "other"
 
 
+class PipelineStageType(str, Enum):
+    """Types of pipeline stages"""
+    PARSE = "parse"
+    CHUNK = "chunk"
+    INDEX = "index"
+
+
 class DocumentStatus(str, Enum):
     """Processing status of a document"""
     PENDING = "pending"           # Document uploaded, waiting to start processing
@@ -60,27 +67,14 @@ class DocumentStatus(str, Enum):
     FAILED = "failed"            # Processing failed at any stage
 
 
-class ProcessingStage(str, Enum):
-    """Document processing stages"""
-    UPLOAD = "upload"           # File upload to S3
-    PARSE = "parse"             # Extract text from document using Docling/RAGParser
-    CHUNK_INDEX = "chunk-index" # Split parsed text into chunks and create vector index
-
-
 class StageStatus(str, Enum):
     """Status of individual processing stages"""
     WAITING = "waiting"     # Stage is waiting to be started
     RUNNING = "running"     # Stage is currently processing
     COMPLETED = "completed" # Stage completed successfully
     FAILED = "failed"       # Stage failed with error
+    SKIPPED = "skipped"     # Stage was skipped (e.g., already completed)
 
-
-class ChunkingStrategy(str, Enum):
-    """Chunking strategies for document processing"""
-    FIXED_SIZE = "fixed_size"
-    SENTENCE = "sentence"
-    PARAGRAPH = "paragraph"
-    RECURSIVE = "recursive"
 
 
 class EmbeddingModel(str, Enum):
@@ -124,24 +118,81 @@ class QueryStatus(str, Enum):
 
 # Default configurations
 
-DEFAULT_CHUNKING_CONFIG = {
-    "strategy": ChunkingStrategy.PARAGRAPH,
-    "chunk_size": 1000,
-    "chunk_overlap": 200,
-}
+class ParserType(str, Enum):
+    """Supported parser types in RAGParser"""
+    DOCLING = "docling"
+    MARKER = "marker"
+    UNSTRUCTURED = "unstructured"
 
-DEFAULT_EMBEDDING_CONFIG = {
-    "model_name": "sentence-transformers/all-MiniLM-L6-v2",
-    "model_type": EmbeddingModel.SENTENCE_TRANSFORMERS,
-    "dimensions": 384,
-}
+class ParseConfig(BaseModel):
+    """Document-specific parsing configuration"""
+    parser_type: ParserType = ParserType.DOCLING
+    do_ocr: bool = True
+    extract_tables: bool = True
+    extract_images: bool = False
+    ocr_language: str = "auto"
+    preserve_formatting: bool = True
+    handle_multi_column: bool = True
+    
+    class Config:
+        use_enum_values = True
 
-DEFAULT_INDEX_CONFIG = {
-    "name": "default-index",
-    "index_type": IndexType.FAISS,
-    "dimensions": 384,
-    "similarity_metric": "cosine",
-}
+
+class ChunkingStrategy(str, Enum):
+    """Chunking strategies for document processing"""
+    FIXED_SIZE = "fixed_size"
+    SENTENCE = "sentence"
+    PARAGRAPH = "paragraph"
+    RECURSIVE = "recursive"
+
+class ChunkConfig(BaseModel):
+    """Global chunking configuration applied to all documents"""
+    strategy: str = ChunkingStrategy.RECURSIVE
+    chunk_size: int = 1000
+    chunk_overlap: int = 200
+    preserve_table_structure: bool = True
+    serialize_tables: bool = False  # Based on paper findings - this hurts performance
+
+
+class IndexConfig(BaseModel):
+    """Global indexing configuration applied to all documents"""
+    model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    dimensions: int = 384
+    index_type: str = IndexType.FAISS
+    similarity_metric: str = "cosine"
+    use_vector_db: bool = True
+    use_bm25: bool = True  
+    top_n_retrieval: int = 10
+    
+    model_config = {"protected_namespaces": ()}
+
+
+class GlobalProcessingConfig(BaseModel):
+    """Global processing configuration for parse, chunk and index stages"""
+    parse_config: ParseConfig = Field(default_factory=ParseConfig)
+    chunk_config: ChunkConfig = Field(default_factory=ChunkConfig)
+    index_config: IndexConfig = Field(default_factory=IndexConfig)
+    default_pipeline_name: str = "standard_rag"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for storage"""
+        return {
+            "parse_config": self.parse_config.model_dump(),
+            "chunk_config": self.chunk_config.model_dump(),
+            "index_config": self.index_config.model_dump(),
+            "default_pipeline_name": self.default_pipeline_name,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "GlobalProcessingConfig":
+        """Create from dictionary"""
+        return cls(
+            parse_config=ParseConfig(**data.get("parse_config", {})),
+            chunk_config=ChunkConfig(**data.get("chunk_config", {})),
+            index_config=IndexConfig(**data.get("index_config", {})),
+            default_pipeline_name=data.get("default_pipeline_name", "standard_rag"),
+        )
+
 
 DEFAULT_RETRIEVAL_STRATEGY = {
     "method": RetrievalMethod.HYBRID,
@@ -171,52 +222,18 @@ Answer:""",
 
 Summary:"""
 }
-
-# Default stage configurations
-DEFAULT_STAGE_CONFIGS = {
-    "parse": {
-        "do_ocr": True,
-        "extract_tables": True,
-        "extract_images": False,
-        "ocr_language": "en"
-    },
-    "chunk-index": {
-        # Chunking configuration
-        "chunk_strategy": ChunkingStrategy.PARAGRAPH,
-        "chunk_size": 1000,
-        "chunk_overlap": 200,
-        # Indexing configuration
-        "model_name": "sentence-transformers/all-MiniLM-L6-v2",
-        "model_type": EmbeddingModel.SENTENCE_TRANSFORMERS,
-        "dimensions": 384,
-        "index_type": IndexType.FAISS,
-        "similarity_metric": "cosine"
-    }
-}
-
 # Document processing constants
-MAX_DOCUMENT_SIZE_MB = 50
-ALLOWED_DOCUMENT_TYPES = {
-    "application/pdf": [".pdf"],
-    "application/msword": [".doc"],
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
-    "text/plain": [".txt"],
-    "text/markdown": [".md"],
-    "text/csv": [".csv"],
-    "application/json": [".json"],
-    "application/vnd.ms-excel": [".xls"],
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
-    "application/epub+zip": [".epub"],
-}
-
-# Chunking constants
-DEFAULT_CHUNK_SIZE = 1000
-DEFAULT_CHUNK_OVERLAP = 200
-
-# LLM constants
-DEFAULT_TEMPERATURE = 0.7
-DEFAULT_MAX_TOKENS = 1024
-
-# Vector store constants
-DEFAULT_TOP_K = 5
-SIMILARITY_THRESHOLD = 0.7 
+class UploadConfig(BaseModel):
+    """Upload configuration"""
+    max_document_size_mb: int = 50
+    allowed_document_types: Dict[str, List[str]] = {
+        "application/pdf": [".pdf"],
+        # "application/msword": [".doc"],
+        # "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
+        # "text/plain": [".txt"],
+        # "text/markdown": [".md"],
+        # "text/csv": [".csv"],
+        # "application/json": [".json"],
+        # "application/vnd.ms-excel": [".xls"],
+        # "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
+    }

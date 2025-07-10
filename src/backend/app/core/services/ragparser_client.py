@@ -13,6 +13,8 @@ class RAGParserRequest(BaseModel):
     """Request model for RAGParser upload endpoint"""
     url: str
     options: Optional[Dict[str, Any]] = None
+    callback_url: Optional[str] = None
+    callback_payload: Optional[Dict[str, Any]] = None
 
 class RAGParserResponse(BaseModel):
     """Response model from RAGParser upload endpoint"""
@@ -51,13 +53,16 @@ class RAGParserClient:
     
     def __init__(self, base_url: Optional[str] = None):
         self.base_url = base_url or settings.RAGPARSER_BASE_URL
+        self.bucket_url = settings.RAGPARSER_BUCKET_URL
         self.timeout = aiohttp.ClientTimeout(total=settings.RAGPARSER_TIMEOUT)
         self.api_key = settings.RAGPARSER_API_KEY
     
     async def submit_document_for_parsing(
         self, 
         document_url: str, 
-        options: Optional[Dict[str, Any]] = None
+        options: Optional[Dict[str, Any]] = None,
+        callback_url: Optional[str] = None,
+        callback_payload: Optional[Dict[str, Any]] = None
     ) -> RAGParserResponse:
         """
         Submit a document URL to RAGParser for processing
@@ -65,6 +70,8 @@ class RAGParserClient:
         Args:
             document_url: URL to the document (e.g., S3 presigned URL)
             options: Optional processing parameters
+            callback_url: Optional URL for RAGParser to call upon completion
+            callback_payload: Optional payload to include in the callback
             
         Returns:
             RAGParserResponse with task_id and queue information
@@ -74,7 +81,9 @@ class RAGParserClient:
         """
         request_data = RAGParserRequest(
             url=document_url,
-            options=options or {}
+            options=options or {},
+            callback_url=callback_url,
+            callback_payload=callback_payload
         )
         
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
@@ -180,18 +189,30 @@ class RAGParserClient:
         Raises:
             Exception: If the download fails
         """
-        # Construct the full URL to the result
-        result_url = f"{self.base_url}/results/{result_key}"
+        # Construct the full URL to the result using bucket URL
+        # Handle cases where result_key already contains "results/" prefix
+        if result_key.startswith("results/"):
+            result_url = f"{self.bucket_url}/{result_key}"
+        else:
+            result_url = f"{self.bucket_url}/results/{result_key}"
         
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
             try:
                 headers = {}
-                if self.api_key:
-                    headers["Authorization"] = f"Bearer {self.api_key}"
+                # Note: Bucket URLs typically don't need API key authentication
+                # if self.api_key:
+                #     headers["Authorization"] = f"Bearer {self.api_key}"
                     
                 async with session.get(result_url, headers=headers) as response:
                     if response.status == 200:
-                        return await response.json()
+                        # Handle bucket storage that might serve JSON with wrong MIME type
+                        try:
+                            return await response.json()
+                        except Exception:
+                            # Fallback: get as text and parse manually
+                            import json
+                            text_content = await response.text()
+                            return json.loads(text_content)
                     else:
                         error_text = await response.text()
                         raise Exception(f"Failed to download result: {response.status} - {error_text}")
@@ -213,18 +234,30 @@ class RAGParserClient:
         Raises:
             Exception: If the download fails
         """
-        # Construct the full URL to the table result
-        table_url = f"{self.base_url}/results/{table_key}"
+        # Construct the full URL to the table result using bucket URL
+        # Handle cases where table_key already contains "results/" prefix
+        if table_key.startswith("results/"):
+            table_url = f"{self.bucket_url}/{table_key}"
+        else:
+            table_url = f"{self.bucket_url}/results/{table_key}"
         
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
             try:
                 headers = {}
-                if self.api_key:
-                    headers["Authorization"] = f"Bearer {self.api_key}"
+                # Note: Bucket URLs typically don't need API key authentication
+                # if self.api_key:
+                #     headers["Authorization"] = f"Bearer {self.api_key}"
                     
                 async with session.get(table_url, headers=headers) as response:
                     if response.status == 200:
-                        return await response.json()
+                        # Handle bucket storage that might serve JSON with wrong MIME type
+                        try:
+                            return await response.json()
+                        except Exception:
+                            # Fallback: get as text and parse manually
+                            import json
+                            text_content = await response.text()
+                            return json.loads(text_content)
                     else:
                         error_text = await response.text()
                         raise Exception(f"Failed to download table result: {response.status} - {error_text}")

@@ -3,10 +3,15 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 from sqlmodel import Session
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from app.core.config.constants import DocumentStatus, DEFAULT_CHUNKING_CONFIG
+from app.core.config.constants import DocumentStatus, ChunkConfig
 from app.core.models.document import Document, DocumentChunk
+from app.core.models.pipeline import Pipeline
 from app.core.services.document_stages import document_stages
+from app.core.services.dynamic_pipeline import dynamic_pipeline_service
+from app.core.services.s3 import s3_service
+from app.core.services.ragparser_client import ragparser_client
 from app.core.db import engine
 
 logger = logging.getLogger(__name__)
@@ -16,6 +21,7 @@ class PipelineProcessor:
     
     def __init__(self):
         self.stages = document_stages
+        self.dynamic_pipeline = dynamic_pipeline_service
     
     async def process_stage(
         self, 
@@ -38,8 +44,10 @@ class PipelineProcessor:
                     result = await self.stages.upload_stage(document, session, config)
                 elif stage_name == "parse":
                     result = await self.stages.parse_stage(document, session, config)
-                elif stage_name == "chunk-index":
-                    result = await self.stages.chunk_index_stage(document, session, config)
+                elif stage_name == "chunk":
+                    result = await self.stages.chunk_stage(document, session, config)
+                elif stage_name == "index":
+                    result = await self.stages.index_stage(document, session, config=config)
                 else:
                     raise ValueError(f"Unknown stage: {stage_name}")
                 
@@ -144,6 +152,50 @@ class PipelineProcessor:
             session.add(document)
             session.commit()
             raise
+    
+    # Dynamic Pipeline Methods
+    async def execute_pipeline(
+        self,
+        pipeline_name: str,
+        document_id: str,
+        session: Session,
+        config_overrides: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Execute a predefined pipeline using the dynamic pipeline system"""
+        try:
+            execution = await self.dynamic_pipeline.execute_pipeline(
+                pipeline_name=pipeline_name,
+                document_id=document_id,
+                session=session,
+                config_overrides=config_overrides
+            )
+            
+            # Convert execution result to legacy format for API compatibility
+            return {
+                "execution_id": execution.execution_id,
+                "pipeline_name": execution.pipeline_name,
+                "document_id": execution.document_id,
+                "status": "completed" if execution.completed_at and not execution.error_message else "failed",
+                "started_at": execution.started_at,
+                "completed_at": execution.completed_at,
+                "current_stage": execution.current_stage,
+                "failed_stage": execution.failed_stage,
+                "error_message": execution.error_message,
+                "stage_results": execution.stage_results,
+                "stage_statuses": execution.stage_statuses
+            }
+            
+        except Exception as e:
+            logger.error(f"Pipeline execution failed: {e}")
+            raise
+    
+    def get_available_pipelines(self) -> Dict[str, Pipeline]:
+        """Get information about all available predefined pipelines"""
+        return self.dynamic_pipeline.get_predefined_pipelines()
+    
+    def get_available_stages(self) -> Dict[str, Dict[str, Any]]:
+        """Get information about all available stages"""
+        return self.dynamic_pipeline.get_available_stages()
     
     async def check_parsing_status(self, document: Document, session) -> bool:
         """
@@ -338,7 +390,7 @@ class PipelineProcessor:
             return chunks
         
         # Get chunking configuration
-        chunking_config = DEFAULT_CHUNKING_CONFIG.copy()
+        chunking_config = ChunkConfig().model_dump()
         
         # Create text splitter
         text_splitter = RecursiveCharacterTextSplitter(

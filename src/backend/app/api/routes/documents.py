@@ -2,12 +2,14 @@ from typing import Any, List, Optional, Dict, Annotated
 import uuid
 import os
 import asyncio
+import json
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
-from sqlmodel import select, desc, update
+from sqlmodel import select, desc, update, func, delete, Session
 import logging
 import hashlib
+from io import BytesIO
 
 from app.api.deps import CurrentUser, SessionDep, get_user_with_permission
 from app.core.models.document import Document, DocumentChunk, DocumentResponse
@@ -15,10 +17,10 @@ from app.core.config.constants import DocumentSourceType, DocumentStatus, Chunki
 from app.core.config.settings import settings
 from app.core.models.user import User
 from app.core.services.s3 import s3_service
-from app.core.services.document_processor import document_processor
-from app.core.services.pipeline_processor import pipeline_processor
-from app.core.config.processing_config import ParseConfig, ParserType
+from app.core.services.dynamic_pipeline import dynamic_pipeline_service
+from app.core.config.constants import ParseConfig, ParserType, ChunkConfig, IndexConfig, UploadConfig
 from app.core.services.config_service import config_service
+from app.core.services.ragparser_client import ragparser_client
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,9 @@ def require_document_delete_permission(current_user: CurrentUser) -> User:
 
 def require_document_read_permission(current_user: CurrentUser) -> User:
     return get_user_with_permission("documents:read")(current_user)
+
+def require_document_admin_permission(current_user: CurrentUser) -> User:
+    return get_user_with_permission("documents:admin")(current_user)
 
 
 @router.get("/", response_model=List[DocumentResponse])
@@ -55,6 +60,34 @@ async def list_documents(
         
     documents = session.exec(query).all()
     return [DocumentResponse.from_document(doc) for doc in documents]
+
+
+@router.get("/pipelines", response_model=Dict[str, Any])
+async def get_available_pipelines(
+    current_user: Annotated[User, Depends(require_document_read_permission)],
+) -> Any:
+    """
+    Get a list of available processing pipelines with their definitions.
+    
+    This endpoint provides clients with the available pipeline templates
+    that can be used to process documents.
+    """
+    pipelines = dynamic_pipeline_service.get_predefined_pipelines()
+    return {name: pipeline.model_dump() for name, pipeline in pipelines.items()}
+
+
+@router.get("/stages", response_model=Dict[str, Any])
+async def get_available_stages(
+    current_user: Annotated[User, Depends(require_document_read_permission)],
+) -> Any:
+    """
+    Get a list of available pipeline stages with their metadata.
+    
+    This endpoint provides clients with the available stages that can be
+    used to construct custom pipelines.
+    """
+    stages = dynamic_pipeline_service.get_available_stages()
+    return {name: stage_info for name, stage_info in stages.items()}
 
 
 @router.get("/{document_id}", response_model=DocumentResponse)
@@ -81,16 +114,16 @@ async def upload_document(
     source_name: Optional[str] = Form(None),
     run_pipeline: bool = Form(True),
 ) -> Any:
-    """Upload a document and optionally start processing pipeline"""
+    """Upload a document and optionally start the default processing pipeline"""
     
     # Validate file
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
     
-    if file.content_type not in ["application/pdf"]:
+    if file.content_type not in UploadConfig().allowed_document_types:
         raise HTTPException(
             status_code=400, 
-            detail=f"Unsupported file type: {file.content_type}. Only PDF files are supported."
+            detail=f"Unsupported file type: {file.content_type}. Only {UploadConfig().allowed_document_types.keys()} files are supported."
         )
     
     # Generate document ID and file path
@@ -101,7 +134,7 @@ async def upload_document(
     
     # Read file content for hash calculation
     file_content = await file.read()
-    file.file.seek(0)  # Reset file pointer
+    await file.seek(0)  # Reset file pointer
     
     # Calculate binary hash for deduplication
     binary_hash = hashlib.sha256(file_content).hexdigest()
@@ -113,7 +146,6 @@ async def upload_document(
     
     if existing_doc:
         logger.info(f"Document with hash {binary_hash} already exists: {existing_doc.id}")
-        # Return existing document instead of creating duplicate
         return DocumentResponse.from_document(existing_doc)
     
     # Create document record
@@ -123,86 +155,73 @@ async def upload_document(
         title=title or os.path.splitext(file.filename)[0],
         source_type=source_type,
         source_name=source_name,
-        file_path=s3_key,  # Will be set by upload stage
         content_type=file.content_type,
         file_size=len(file_content),
         binary_hash=binary_hash,
     )
     
-    # Use simplified status structure with async upload
-    document.status_dict = {
-        "stages": {
-            "upload": {
-                "status": "waiting",  # Upload starts as waiting for async processing
-                "config": {
-                    "target_s3_key": s3_key,
-                    "content_type": file.content_type
-                }
-            },
-            "parse": {
-                "status": "waiting",
-                "config": {
-                    "do_ocr": True,
-                    "do_table_structure": True,
-                    "ocr_language": "en"
-                }
-            },
-            "chunk": {
-                "status": "waiting", 
-                "config": {
-                    "strategy": "recursive",
-                    "chunk_size": 1000,
-                    "chunk_overlap": 200
-                }
-            },
-            "index": {
-                "status": "waiting",
-                "config": {
-                    "model_name": "sentence-transformers/all-MiniLM-L6-v2",
-                    "index_type": "faiss"
-                }
-            }
-        }
-    }
+    # Get global configuration for new document
+    global_config = config_service.get_global_config()
     
-    # Set clean metadata with only static document characteristics
+    # Initialize status with waiting stages
+    document.status_dict = { "stages": { "upload": { "status": "waiting" } } }
+    
+    # Set clean metadata
     document.metadata_dict = {
         "uploaded_by": str(current_user.id),
         "original_filename": file.filename,
-        # Additional document characteristics will be added after parsing
-        # such as: page_count, is_scanned, table_count, etc.
     }
     
-    # Save document to database first (without file_path set yet)
-    document.file_path = None  # Will be set by upload stage
     session.add(document)
+    
+    # Upload file to S3
+    try:
+        file_obj = BytesIO(file_content)
+        s3_service.upload_file(
+            file_obj, 
+            s3_key, 
+            file.content_type,
+            metadata={ "document_id": str(document_id) }
+        )
+        document.file_path = s3_key
+        
+        # Mark upload stage as completed
+        document.status_dict = {
+            "stages": {
+                "upload": {
+                    "status": "completed",
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                }
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to upload document {document.id} to S3: {e}")
+        document.status_dict = {
+            "stages": {
+                "upload": {
+                    "status": "failed",
+                    "error_message": str(e),
+                }
+            }
+        }
+        session.commit()
+        raise HTTPException(status_code=500, detail="Failed to upload file to storage.")
+
     session.commit()
     session.refresh(document)
     
-    # Start async upload stage
-    background_tasks.add_task(
-        pipeline_processor.process_stage,
-        document_id=str(document_id),
-        stage_name="upload",
-        config={
-            "file_content": file_content,
-            "s3_key": s3_key,
-            "content_type": file.content_type,
-            "auto_start_parse": run_pipeline,  # Auto-start parse if requested
-            "metadata": {
-                "document_id": str(document_id),
-                "uploaded_by": str(current_user.id),
-                "source_type": source_type,
-                "binary_hash": binary_hash
-            }
-        }
-    )
-    
-    # Start parse stage after upload if requested
+    # If run_pipeline is true, start the default pipeline
     if run_pipeline:
-        # Parse will be triggered automatically after upload completes
-        # or can be started manually once upload is done
-        pass
+        default_pipeline = global_config.default_pipeline_name
+        logger.info(f"Automatically starting default pipeline '{default_pipeline}' for document {document.id}")
+        background_tasks.add_task(
+            dynamic_pipeline_service.execute_pipeline,
+            pipeline_name=default_pipeline,
+            document_id=str(document.id),
+            session=session
+        )
     
     return DocumentResponse.from_document(document)
 
@@ -224,114 +243,55 @@ async def delete_document(
     deletion_results = {
         "original_file": False,
         "parsed_results": [],
-        "table_files": [],
-        "chunks_deleted": 0
+        "chunks": 0,
+        "database_records": 0,
+        "errors": []
     }
     
-    # 1. Delete original document from S3
-    original_delete_success = s3_service.delete_file(document.file_path)
-    deletion_results["original_file"] = original_delete_success
-    
-    if not original_delete_success:
-        logger.warning(f"Failed to delete original file: {document.file_path}")
-    
-    # 2. Delete parsing results and table files from S3
-    status_dict = document.status_dict
-    stages = status_dict.get("stages", {})
-    parse_stage = stages.get("parse", {})
-    parse_result = parse_stage.get("result", {})
-    
-    # Delete main parsing result file
-    result_key = parse_result.get("result_key")
-    if result_key:
+    # 1. Delete original file from S3
+    if document.file_path:
         try:
-            # Extract S3 key from result_key (remove 'results/' prefix if present)
-            s3_key = result_key
-            if s3_key.startswith("results/"):
-                s3_key = s3_key[8:]  # Remove 'results/' prefix
-            
-            delete_success = s3_service.delete_file(f"results/{s3_key}")
-            deletion_results["parsed_results"].append({
-                "key": result_key,
-                "success": delete_success
-            })
-            
-            if delete_success:
-                logger.info(f"Deleted parsing result: {result_key}")
-            else:
-                logger.warning(f"Failed to delete parsing result: {result_key}")
-                
+            s3_service.delete_file(document.file_path)
+            deletion_results["original_file"] = True
+            logger.info(f"Deleted original file {document.file_path} from S3")
         except Exception as e:
-            logger.error(f"Error deleting parsing result {result_key}: {e}")
-            deletion_results["parsed_results"].append({
-                "key": result_key,
-                "success": False,
-                "error": str(e)
-            })
-    
-    # Delete table files
-    table_keys = parse_result.get("table_keys", [])
-    for table_key in table_keys:
+            error_msg = f"Error deleting original file from S3: {e}"
+            logger.error(error_msg)
+            deletion_results["errors"].append(error_msg)
+            
+    # 2. Delete parsed results from S3 (if any)
+    doc_stages = document.status_dict.get("stages", {})
+    parse_result = doc_stages.get("parse", {}).get("result", {})
+    if parse_result and "result_key" in parse_result:
         try:
-            # Extract S3 key from table_key (remove 'results/' prefix if present)
-            s3_key = table_key
-            if s3_key.startswith("results/"):
-                s3_key = s3_key[8:]  # Remove 'results/' prefix
-            
-            delete_success = s3_service.delete_file(f"results/{s3_key}")
-            deletion_results["table_files"].append({
-                "key": table_key,
-                "success": delete_success
-            })
-            
-            if delete_success:
-                logger.info(f"Deleted table file: {table_key}")
-            else:
-                logger.warning(f"Failed to delete table file: {table_key}")
-                
+            s3_service.delete_file(parse_result["result_key"])
+            deletion_results["parsed_results"].append(parse_result["result_key"])
+            logger.info(f"Deleted parsed result file {parse_result['result_key']} from S3")
         except Exception as e:
-            logger.error(f"Error deleting table file {table_key}: {e}")
-            deletion_results["table_files"].append({
-                "key": table_key,
-                "success": False,
-                "error": str(e)
-            })
+            error_msg = f"Error deleting parsed result file from S3: {e}"
+            logger.error(error_msg)
+            deletion_results["errors"].append(error_msg)
+            
+    # 3. Delete chunks from database
+    chunk_delete_statement = delete(DocumentChunk).where(DocumentChunk.document_id == str(document_id))
+    chunk_result = session.exec(chunk_delete_statement)
+    session.commit()
+    deletion_results["chunks"] = chunk_result.rowcount
+    logger.info(f"Deleted {chunk_result.rowcount} chunks from database")
     
-    # 3. Delete associated chunks from database
-    chunks_query = select(DocumentChunk).where(DocumentChunk.document_id == str(document_id))
-    chunks = session.exec(chunks_query).all()
-    for chunk in chunks:
-        session.delete(chunk)
-    deletion_results["chunks_deleted"] = len(chunks)
-    
-    # 4. Delete the document from database
+    # 4. Delete document record from database
     session.delete(document)
     session.commit()
+    deletion_results["database_records"] = 1
+    logger.info(f"Deleted document record {document_id} from database")
     
-    # 5. Prepare response message
-    total_parsed_files = len(deletion_results["parsed_results"]) + len(deletion_results["table_files"])
-    successful_parsed_deletions = (
-        sum(1 for r in deletion_results["parsed_results"] if r["success"]) +
-        sum(1 for r in deletion_results["table_files"] if r["success"])
+    return JSONResponse(
+        status_code=200,
+        content={
+            "message": f"Deletion process for document {document_id} completed",
+            "details": deletion_results
+        }
     )
-    
-    message = f"Document '{document.filename}' deleted successfully"
-    details = [
-        f"Database record: deleted",
-        f"Original file: {'deleted' if deletion_results['original_file'] else 'failed to delete'}",
-        f"Chunks: {deletion_results['chunks_deleted']} deleted",
-        f"Parsing results: {successful_parsed_deletions}/{total_parsed_files} deleted"
-    ]
-    
-    logger.info(f"Document deletion completed: {message}")
-    logger.info(f"Deletion details: {', '.join(details)}")
-    
-    return JSONResponse(content={
-        "message": message,
-        "details": details,
-        "deletion_results": deletion_results
-    })
-
 
 @router.get("/{document_id}/chunks", response_model=List[DocumentChunk])
 async def get_document_chunks(
@@ -342,21 +302,14 @@ async def get_document_chunks(
     limit: int = 100,
     chunk_type: Optional[str] = Query(None, description="Filter by chunk type (text, table)"),
 ) -> Any:
-    """Get chunks for a specific document with optional filtering by type"""
-    document = session.get(Document, str(document_id))
-    if not document:
-        raise HTTPException(status_code=404, detail="Document not found")
+    """Get all chunks for a document"""
+    query = select(DocumentChunk).where(DocumentChunk.document_id == str(document_id)).offset(skip).limit(limit)
     
-    # Base query
-    query = select(DocumentChunk).where(DocumentChunk.document_id == str(document_id))
-    
-    # Apply chunk type filter if provided
     if chunk_type:
-        query = query.where(DocumentChunk.metadata_json.contains(f'"type": "{chunk_type}"'))
-    
-    # Apply pagination
-    query = query.offset(skip).limit(limit)
-    
+        # This requires a JSON-aware query, which can be database-specific
+        # Using a simple string search for now, which may not be perfectly accurate
+        query = query.filter(func.json_extract(DocumentChunk.metadata, "$.type") == chunk_type)
+        
     chunks = session.exec(query).all()
     return chunks
 
@@ -368,21 +321,16 @@ async def get_document_download_url(
     session: SessionDep,
     expiration: int = Query(3600, description="URL expiration time in seconds"),
 ) -> Any:
-    """Generate a pre-signed URL for downloading the document"""
+    """Get a presigned download URL for the document's original file"""
     document = session.get(Document, str(document_id))
-    if not document:
-        raise HTTPException(status_code=404, detail="Document not found")
-    
-    # Generate presigned URL
-    url = s3_service.get_file_url(document.file_path, expiration=expiration)
-    
+    if not document or not document.file_path:
+        raise HTTPException(status_code=404, detail="Document file not found")
+        
+    url = s3_service.get_file_url(document.file_path, expiration)
     if not url:
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to generate download URL"
-        )
-    
-    return JSONResponse(content={"download_url": url, "expires_in": expiration})
+        raise HTTPException(status_code=500, detail="Could not generate download URL")
+        
+    return {"url": url}
 
 
 @router.post("/{document_id}/stages/{stage}/start")
@@ -394,60 +342,47 @@ async def start_document_stage(
     session: SessionDep,
     config_overrides: Optional[Dict[str, Any]] = None,
 ) -> Any:
-    """Start or retry a specific processing stage"""
+    """
+    Start a specific processing stage for a document.
+    This is now a wrapper around the single-stage execution in dynamic_pipeline_service.
+    """
     document = session.get(Document, str(document_id))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
-    
-    # Validate stage
-    if stage not in ["upload", "parse", "chunk-index"]:
-        raise HTTPException(status_code=400, detail=f"Invalid stage: {stage}. Must be 'upload', 'parse' 'chunk' or 'index'")
-    
-    # Get stages from the new status structure
-    status_dict = document.status_dict
-    stages = status_dict.get("stages", {})
-    current_stage_status = stages.get(stage, {}).get("status")
-    
-    # Check if stage can be started
-    if current_stage_status == "running":
-        raise HTTPException(status_code=400, detail=f"Stage '{stage}' is already running")
-    
-    # Check prerequisites
-    if stage == "chunk-index":
-        parse_status = stages.get("parse", {}).get("status")
-        if parse_status != "completed":
-            raise HTTPException(status_code=400, detail="Cannot start chunk-index: parsing must be completed first")
-    
-    # Update stage status to running
-    from datetime import datetime, timezone
-    stages[stage] = {
-        **stages.get(stage, {}),
-        "status": "running",
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "attempts": stages.get(stage, {}).get("attempts", 0) + 1,
-        "error_message": None
-    }
-    
-    # Add config overrides if provided
-    if config_overrides:
-        stages[stage]["config_overrides"] = config_overrides
-    
-    # Update the status structure (simplified - no redundant fields)
-    status_dict["stages"] = stages
-    document.status_dict = status_dict
-    document.updated_at = datetime.now(timezone.utc)
-    session.add(document)
-    session.commit()
-    
-    # Start the stage processing in background using pipeline processor
+
+    logger.info(f"Manually starting stage '{stage}' for document {document_id}")
+
+    # Use a background task to run the single stage via the pipeline executor
     background_tasks.add_task(
-        pipeline_processor.process_stage,
+        dynamic_pipeline_service.execute_single_stage,
         document_id=str(document_id),
         stage_name=stage,
-        config=config_overrides
+        session=session,
+        config=config_overrides,
     )
+
+    return {"message": f"Stage '{stage}' has been initiated for document {document_id}."}
+
+
+@router.get("/{document_id}/stages/{stage}/status")
+async def get_stage_status(
+    current_user: Annotated[User, Depends(require_document_read_permission)],
+    document_id: uuid.UUID,
+    stage: str,
+    session: SessionDep,
+) -> Any:
+    """Get the status of a specific stage for a document"""
+    document = session.get(Document, str(document_id))
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+        
+    doc_stages = document.status_dict.get("stages", {})
+    stage_status = doc_stages.get(stage)
     
-    return {"message": f"Stage '{stage}' started successfully", "stages": document.status_dict.get("stages", {})}
+    if not stage_status:
+        raise HTTPException(status_code=404, detail=f"Stage '{stage}' not found for this document")
+        
+    return stage_status
 
 
 @router.get("/{document_id}/stages/{stage}/error")
@@ -457,127 +392,74 @@ async def get_stage_error(
     stage: str,
     session: SessionDep,
 ) -> Any:
-    """Get error details for a failed stage"""
+    """Get the error message if a stage has failed"""
     document = session.get(Document, str(document_id))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+        
+    doc_stages = document.status_dict.get("stages", {})
+    stage_status = doc_stages.get(stage, {})
     
-    if stage not in ["upload", "parse", "chunk-index"]:
-        raise HTTPException(status_code=400, detail=f"Invalid stage: {stage}")
-    
-    stages = document.status_dict.get("stages", {})
-    stage_info = stages.get(stage, {})
-    
-    if stage_info.get("status") != "failed":
-        raise HTTPException(status_code=400, detail=f"Stage '{stage}' has not failed")
-    
-    return {
-        "document_id": str(document_id),
-        "stage": stage,
-        "error_message": stage_info.get("error_message"),
-        "failed_at": stage_info.get("failed_at"),
-        "attempts": stage_info.get("attempts", 0),
-        "config": stage_info.get("config_overrides", {})
-    }
-
-
-# Removed get_stage_progress endpoint - redundant with update_document_status
-
-
-# Note: process_stage_async function has been replaced by pipeline_processor.process_stage
-# The modular approach now uses document_stages.py for individual stage implementations
-# and pipeline_processor.py for orchestration
+    if stage_status.get("status") != "failed":
+        return {"error_message": None}
+        
+    return {"error_message": stage_status.get("error_message")}
 
 
 def _extract_document_characteristics(ragparser_status: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract document structure characteristics from RAGParser status response"""
-    characteristics = {}
-    logger.info(f"_extract_document_characteristicsRAGParser status: {str(ragparser_status)}")
-    
-    if not isinstance(ragparser_status, dict):
-        return characteristics
+    """Extract document characteristics from RAGParser status result"""
+    if not ragparser_status or "result" not in ragparser_status:
+        return {}
 
-    try:
-        # Extract from top-level fields
-        if "pages_processed" in ragparser_status:
-            characteristics["page_count"] = ragparser_status["pages_processed"]
-        
-        # Extract from document_info section
-        document_info = ragparser_status.get("document_info")
-        if document_info:
-            # Check if document_info is already a parsed object or still a dict
-            if hasattr(document_info, '__dict__'):
-                # It's a parsed DocumentInfo object, access attributes directly
-                if hasattr(document_info, 'table_count'):
-                    characteristics["table_count"] = document_info.table_count
-                if hasattr(document_info, 'image_count'):
-                    characteristics["image_count"] = document_info.image_count
-                if hasattr(document_info, 'text_length'):
-                    characteristics["text_length"] = document_info.text_length
-                if hasattr(document_info, 'word_count'):
-                    characteristics["word_count"] = document_info.word_count
-                if hasattr(document_info, 'is_scanned'):
-                    characteristics["is_scanned"] = document_info.is_scanned
-                if hasattr(document_info, 'language'):
-                    characteristics["language"] = document_info.language
-                if hasattr(document_info, 'rotated_pages'):
-                    characteristics["rotated_pages"] = document_info.rotated_pages
-                if hasattr(document_info, 'mime_type'):
-                    characteristics["mime_type"] = document_info.mime_type
-                if hasattr(document_info, 'pages_processed') and document_info.pages_processed is not None:
-                    characteristics["page_count"] = document_info.pages_processed  # Override with more specific count if available
-            else:
-                # It's still a dictionary, use the original approach
-                for key in ["mime_type", "table_count", "image_count", "text_length", "word_count", "is_scanned", "language", "rotated_pages"]:
-                    if key in document_info:
-                        characteristics[key] = document_info[key]
-        
-       
-        
-        logger.info(f"Extracted document characteristics: {characteristics}")
-        
-    except Exception as e:
-        logger.warning(f"Error extracting document characteristics: {e}")
-    
+    result = ragparser_status["result"]
+    characteristics = {}
+
+    # Check for document structure and its properties
+    if "structure" in result:
+        structure = result["structure"]
+        if "page_count" in structure:
+            characteristics["page_count"] = structure["page_count"]
+        if "is_scanned" in structure:
+            characteristics["is_scanned"] = structure["is_scanned"]
+        # Add other structure properties as needed
+
+    # Check for quality metrics
+    if "quality" in result:
+        quality = result["quality"]
+        if "readability_score" in quality:
+            characteristics["readability_score"] = quality["readability_score"]
+        if "text_to_noise_ratio" in quality:
+            characteristics["text_to_noise_ratio"] = quality["text_to_noise_ratio"]
+        # Add other quality metrics as needed
+
+    # Check for tables
+    if "tables" in result and isinstance(result["tables"], list):
+        characteristics["table_count"] = len(result["tables"])
+        characteristics["has_tables"] = len(result["tables"]) > 0
+
     return characteristics
 
 
 async def _get_fallback_document_characteristics(document: Document, table_keys: Optional[List[str]]) -> Dict[str, Any]:
-    """Get minimal document characteristics when RAGParser data is not available - no fake data"""
-    try:
-        # Base characteristics we know for certain
-        characteristics = {
-            "mime_type": document.content_type,
-            "parsing_incomplete": True,
-            "analysis_source": "fallback",
-            "analysis_limitations": {
-                "page_count": "unknown - parsing incomplete",
-                "text_analysis": "unavailable - parsing incomplete", 
-                "image_analysis": "unavailable - parsing incomplete",
-                "language_detection": "unavailable - parsing incomplete"
-            }
-        }
-        
-        # Only include table info if we have actual table_keys from parsing
-        if table_keys:
-            characteristics.update({
-                "table_count": len(table_keys),
-                "has_tables": True
-            })
-        
-        logger.warning(f"Using fallback characteristics for document {document.id} - RAGParser analysis incomplete")
-        logger.info(f"Fallback characteristics: {characteristics}")
-        
-        return characteristics
-        
-    except Exception as e:
-        logger.error(f"Failed to generate fallback characteristics: {e}")
-        # Return minimal info on error
-        return {
-            "mime_type": document.content_type,
-            "parsing_failed": True,
-            "analysis_source": "error"
-        }
+    """
+    Fallback method to get document characteristics if RAGParser does not provide them.
+    This method can perform basic analysis, e.g., counting pages in a PDF.
+    """
+    # For now, this is a placeholder. A real implementation could use a library
+    # like PyPDF2 to count pages for PDF files.
+    
+    characteristics = {}
+    
+    if table_keys:
+        characteristics["table_count"] = len(table_keys)
+        characteristics["has_tables"] = len(table_keys) > 0
+    else:
+        characteristics["table_count"] = 0
+        characteristics["has_tables"] = False
+
+    # Add other fallback logic as needed, e.g., page count for PDFs
+    
+    return characteristics
 
 
 async def process_parsed_results(
@@ -586,92 +468,75 @@ async def process_parsed_results(
     table_keys: Optional[List[str]] = None, 
     ragparser_status: Optional[Dict[str, Any]] = None
     ) -> None:
-    """Process the parsed results from RAGParser and extract document characteristics"""
+    """
+    Callback function to process results after RAGParser finishes.
+    This is typically called by a webhook from RAGParser.
+    """
     from app.core.db import engine
-    from sqlmodel import Session
-    from app.core.services.ragparser_client import ragparser_client
-    from datetime import datetime, timezone
-    
-    # Always mark parsing as completed, even if result download fails
-    parsing_completed = True
     
     try:
         with Session(engine) as session:
             document = session.get(Document, document_id)
             if not document:
-                logger.error(f"Document {document_id} not found during result processing")
+                logger.error(f"Document {document_id} not found in process_parsed_results callback")
                 return
+
+            # Update parse stage status to completed
+            status_dict = document.status_dict
+            stages = status_dict.get("stages", {})
+            stages["parse"] = {
+                **stages.get("parse", {}),
+                "status": "completed",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "result": {
+                    "result_key": result_key,
+                    "table_keys": table_keys or []
+                }
+            }
+            status_dict["stages"] = stages
+            document.status_dict = status_dict
             
-            logger.info(f"Processing parsed results for document {document_id}")
-            logger.info(f"Result key: {result_key}")
-            logger.info(f"Table keys: {table_keys}")
+            # Extract document characteristics from RAGParser results
+            characteristics = _extract_document_characteristics(ragparser_status)
+
+            # If characteristics are not available from RAGParser, use fallback
+            if not characteristics:
+                characteristics = await _get_fallback_document_characteristics(document, table_keys)
             
-            # Extract document characteristics from RAGParser status for metadata
-            document_characteristics = {}
-            
-            if ragparser_status and ragparser_status.get("document_info"):
-                logger.info(f"Extracting characteristics from RAGParser status for document {document_id}")
-                document_characteristics = _extract_document_characteristics(ragparser_status)
-            else:
-                logger.warning(f"No RAGParser status data available for document {document_id} - using fallback")
-                document_characteristics = await _get_fallback_document_characteristics(document, table_keys)
-            
-            # Update metadata with document characteristics only (no processing info)
-            metadata = document.metadata_dict or {}
-            if document_characteristics:
-                metadata.setdefault("structure", {}).update(document_characteristics)
-                logger.info(f"Updated document {document_id} metadata with structure: {document_characteristics}")
-            
+            # Update document metadata with new characteristics
+            metadata = document.metadata_dict
+            metadata.update(characteristics)
             document.metadata_dict = metadata
-            
-            # Update status with file references and extract completion data from RAGParser
-            stages = document.status_dict
-            stages.setdefault("stages", {})
-            parse_stage = stages["stages"].setdefault("parse", {})
-            
-            # Extract and update parse stage data from RAGParser response in one operation
-            if ragparser_status:
-                parse_stage.update({
-                    "status": "completed",  # We're processing results, so parsing is completed
-                    "completed_at": ragparser_status.get("completed_at", datetime.now(timezone.utc).isoformat()),
-                    "parser_used": ragparser_status.get("parser_used", parse_stage.get("parser_used")),
-                    "pages_processed": ragparser_status.get("pages_processed", parse_stage.get("pages_processed"))
-                })
-            else:
-                # Fallback update if no RAGParser status provided
-                parse_stage.update({
-                    "status": "completed",
-                    "completed_at": datetime.now(timezone.utc).isoformat()
-                })
-            
-            # Update result data in one operation
-            parse_stage.setdefault("result", {}).update({
-                "result_key": result_key,
-                "table_keys": table_keys or []
-            })
-            
-            document.status_dict = stages
             
             session.add(document)
             session.commit()
             
-            logger.info(f"Successfully processed document characteristics for document {document_id}")
-            
+            logger.info(f"Successfully processed parsed results for document {document_id}")
+
+            # Optional: Automatically trigger the next pipeline stage (e.g., chunking)
+            # This depends on the desired workflow. For now, we'll let the pipeline executor handle it.
+
     except Exception as e:
-        logger.error(f"Error processing document characteristics for document {document_id}: {e}")
-        
-        # Don't fail the parsing stage - just log the error
-        # The document parsing is still considered successful even if metadata extraction fails
+        logger.error(f"Error processing parsed results for document {document_id}: {e}")
+        # Optionally, update document status to failed
         try:
             with Session(engine) as session:
                 document = session.get(Document, document_id)
                 if document:
-                    logger.warning(f"Metadata extraction failed for document {document_id}, but parsing remains completed")
-                    # Just save the document without failing the parse stage
+                    status_dict = document.status_dict
+                    stages = status_dict.get("stages", {})
+                    stages["parse"] = {
+                        **stages.get("parse", {}),
+                        "status": "failed",
+                        "failed_at": datetime.now(timezone.utc).isoformat(),
+                        "error_message": f"Failed to process parsed results: {e}"
+                    }
+                    status_dict["stages"] = stages
+                    document.status_dict = status_dict
                     session.add(document)
                     session.commit()
         except Exception as update_error:
-            logger.error(f"Failed to save document after metadata extraction error: {update_error}")
+            logger.error(f"Failed to update document status after parsing error: {update_error}")
 
 
 @router.post("/{document_id}/reparse")
@@ -683,67 +548,23 @@ async def reparse_document(
     parse_config: ParseConfig,
 ) -> Dict[str, str]:
     """
-    Reparse a document with new parser configuration
-    This will reset the document to parse stage and use the new parser settings
+    Reparse a document with a new parsing configuration.
+    This will trigger the 'parse' stage again.
     """
     document = session.get(Document, str(document_id))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
-    
-    # Check if parsing is currently running and cancel if needed
-    status_dict = document.status_dict
-    current_parse_status = status_dict.get("stages", {}).get("parse", {}).get("status")
-    
-    if current_parse_status == "running":
-        logger.warning(f"Cancelling existing parse task for document {document_id}")
-        # TODO: Implement RAGParser task cancellation
-        # if document.ragparser_task_id:
-        #     await ragparser_client.cancel_task(document.ragparser_task_id)
-    
-    try:
-        # Update document's parse configuration
-        document.parse_config = parse_config
-        
-        # Reset document status using the new structure
-        status_data = document.status_dict
-        
-        # Update parse stage with new config
-        status_data["stages"]["parse"] = {
-            "status": "waiting",
-            "config": parse_config.dict(),  # Store the new config in the stage
-            "attempts": 0
-        }
-        
-        # Reset downstream stages
-        status_data["stages"]["chunk"] = {"status": "waiting"}
-        status_data["stages"]["index"] = {"status": "waiting"}
-        
-        document.status_dict = status_data
-        document.updated_at = datetime.now(timezone.utc)
-        
-        # Note: Don't clear ragparser_task_id here - let process_stage_async set the new one
-        # to avoid race conditions
-        
-        session.add(document)
-        session.commit()
-        
-        # Use the NEW pathway that properly handles status structure and config
-        background_tasks.add_task(
-            pipeline_processor.process_stage, 
-            document_id=str(document_id), 
-            stage_name="parse",
-            config=parse_config.dict()
-        )
-        
-        return {
-            "message": f"Document reparse started with {parse_config.parser_type} parser",
-            "document_id": str(document_id),
-            "parser_type": parse_config.parser_type
-        }
-        
-    except Exception as e:
-        logger.error(f"Error starting document reparse: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to start reparse: {str(e)}")
+
+    # Use a background task to re-run the parse stage
+    background_tasks.add_task(
+        dynamic_pipeline_service.execute_single_stage,
+        document_id=str(document_id),
+        stage_name="parse",
+        session=session,
+        config=parse_config.model_dump(),
+    )
+
+    return {"message": "Reparsing initiated. The document's parse stage is now running."}
 
 
 @router.post("/{document_id}/reprocess")
@@ -754,61 +575,26 @@ async def reprocess_document(
     session: SessionDep,
 ) -> Dict[str, str]:
     """
-    Reprocess a document with current global chunk and index configuration
-    This will reset chunk and index stages and reprocess with current global settings
+    Reprocess a document using the configured default pipeline.
+    This will re-run chunking and indexing based on the latest parsed data.
     """
     document = session.get(Document, str(document_id))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
-    
-    try:
-        # Check if parse stage is completed
-        status_data = document.status_dict
-        parse_status = status_data.get("stages", {}).get("parse", {}).get("status")
-        
-        if parse_status != "completed":
-            raise HTTPException(
-                status_code=400, 
-                detail="Cannot reprocess document - parse stage must be completed first"
-            )
-        
-        # Reset chunk and index stages
-        status_data["stages"]["chunk"] = {
-            "status": "waiting",
-            "metrics": {}
-        }
-        status_data["stages"]["index"] = {
-            "status": "waiting",
-            "metrics": {}
-        }
-        
-        # Remove legacy fields - only use stages structure
-        # status_data["current_stage"] = "chunk"
-        # status_data["stage_status"] = "waiting"
-        
-        document.status_dict = status_data
-        document.updated_at = datetime.now(timezone.utc)
-        
-        session.add(document)
-        session.commit()
-        
-        # Start reprocessing from chunk stage
-        background_tasks.add_task(
-            pipeline_processor.process_stage,
-            document_id=str(document_id),
-            stage_name="chunk-index"
-        )
-        
-        return {
-            "message": "Document reprocessing started with current global configuration",
-            "document_id": str(document_id)
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error starting document reprocessing: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to start reprocessing: {str(e)}")
+
+    # Get the default pipeline name from global config
+    global_config = config_service.get_global_config()
+    default_pipeline = global_config.default_pipeline_name
+
+    # Use a background task to run the default RAG pipeline
+    background_tasks.add_task(
+        dynamic_pipeline_service.execute_pipeline,
+        pipeline_name=default_pipeline,
+        document_id=str(document_id),
+        session=session,
+    )
+
+    return {"message": f"Reprocessing initiated for document {document_id} using the '{default_pipeline}' pipeline."}
 
 
 @router.get("/{document_id}/parse-config", response_model=Dict[str, Any])
@@ -817,16 +603,14 @@ async def get_document_parse_config(
     document_id: uuid.UUID,
     session: SessionDep,
 ) -> Dict[str, Any]:
-    """Get the current parse configuration for a document"""
+    """Get the current parsing configuration for a document"""
     document = session.get(Document, str(document_id))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
-    
-    return {
-        "document_id": str(document_id),
-        "parse_config": document.parse_config.dict(),
-        "available_parsers": [parser.value for parser in ParserType]
-    }
+        
+    doc_stages = document.status_dict.get("stages", {})
+    parse_config = doc_stages.get("parse", {}).get("config", {})
+    return parse_config
 
 
 @router.get("/{document_id}/quality-metrics", response_model=Dict[str, Any])
@@ -835,23 +619,17 @@ async def get_document_quality_metrics(
     document_id: uuid.UUID,
     session: SessionDep,
 ) -> Dict[str, Any]:
-    """Get quality metrics for all stages of a document"""
+    """Get quality metrics for a document from its metadata"""
     document = session.get(Document, str(document_id))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
-    
-    stages = document.stages
-    metrics = {}
-    
-    for stage_name, stage_data in stages.items():
-        if "metrics" in stage_data:
-            metrics[stage_name] = stage_data["metrics"]
-    
-    return {
-        "document_id": str(document_id),
-        "metrics": metrics,
-        "overall_status": document.overall_status
+        
+    metadata = document.metadata_dict
+    quality_metrics = {
+        k: v for k, v in metadata.items() 
+        if k in ["readability_score", "text_to_noise_ratio", "ocr_confidence"]
     }
+    return quality_metrics
 
 
 @router.get("/{document_id}/parse-results", response_model=Dict[str, Any])
@@ -860,37 +638,31 @@ async def get_parse_results(
     document_id: uuid.UUID,
     session: SessionDep,
 ) -> Dict[str, Any]:
-    """Get parse results from RAGParser response data"""
-    logger.info(f"Getting parse results for document {document_id}")
+    """
+    Get the parsed results for a document from S3.
+    This downloads and returns the JSON output from RAGParser.
+    """
     document = session.get(Document, str(document_id))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    # Get parse stage info
-    status_dict = document.status_dict
-    parse_stage = status_dict.get("stages", {}).get("parse", {})
+    doc_stages = document.status_dict.get("stages", {})
+    parse_stage = doc_stages.get("parse", {})
     
     if parse_stage.get("status") != "completed":
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Parse stage not completed. Current status: {parse_stage.get('status', 'unknown')}"
-        )
+        raise HTTPException(status_code=404, detail="Parsing is not yet completed for this document")
     
-    # Get RAGParser result from parse stage
-    parse_result = parse_stage.get("result", {})
-    if not parse_result:
-        raise HTTPException(status_code=404, detail="Parse results not found")
+    result_key = parse_stage.get("result", {}).get("result_key")
+    if not result_key:
+        raise HTTPException(status_code=404, detail="Parsed result file key not found")
     
-    parser_type = parse_stage.get("parser_used", "unknown")
-    
-    return {
-        "document_id": str(document_id),
-        "parse_result": parse_result,
-        "status": parse_stage.get("status"),
-        "completed_at": parse_stage.get("completed_at"),
-        "parser_type": parser_type
-    }
-    
+    try:
+        parsed_data = await s3_service.download_file_content(result_key)
+        return json.loads(parsed_data)
+    except Exception as e:
+        logger.error(f"Failed to download or parse results from S3 for key {result_key}: {e}")
+        raise HTTPException(status_code=500, detail="Could not retrieve parsed results")
+
 
 @router.post("/{document_id}/update-status", response_model=DocumentResponse)
 async def update_document_status(
@@ -898,100 +670,173 @@ async def update_document_status(
     document_id: uuid.UUID,
     session: SessionDep,
 ) -> Any:
-    """Refresh document status from backend and check RAGParser if task is running"""
+    """
+    Manually trigger a status check for a document being processed by RAGParser.
+    This is useful for debugging or if a webhook fails.
+    """
     document = session.get(Document, str(document_id))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    # If there's a RAGParser task running, check its status
-    if document.ragparser_task_id:
-        stages = document.status_dict
-        parse_stage = stages.get("stages", {}).get("parse", {})
-        
-        try:
-            logger.info(f"Manually checking RAGParser status for task {document.ragparser_task_id}")
-            
-            from app.core.services.ragparser_client import ragparser_client
-            status = await ragparser_client.get_task_status_new(document.ragparser_task_id)
-            
-            if hasattr(status, 'model_dump'):
-                import json
-                logger.info(f"RAGParser status details: {json.dumps(status.model_dump, indent=2, default=str)}")
-            
-            # Update progress
-            stages["stages"]["parse"] = {
-                **parse_stage,
-                "progress": status.progress,
-                "last_check": datetime.now(timezone.utc).isoformat()
+    ragparser_task_id = document.ragparser_task_id
+    if not ragparser_task_id:
+        raise HTTPException(status_code=400, detail="Document has no RAGParser task ID")
+
+    try:
+        # Get the latest status from RAGParser
+        status_response = await ragparser_client.get_task_status_new(ragparser_task_id)
+
+        # Process the status response
+        if status_response.state == "completed":
+            logger.info(f"RAGParser task {ragparser_task_id} completed. Processing results...")
+            await process_parsed_results(
+                document_id=str(document_id),
+                result_key=status_response.result_key,
+                table_keys=status_response.table_keys,
+                ragparser_status=status_response.model_dump()
+            )
+        elif status_response.state == "failed":
+            logger.error(f"RAGParser task {ragparser_task_id} failed: {status_response.error}")
+            # Update document status to failed
+            status_dict = document.status_dict
+            stages = status_dict.get("stages", {})
+            stages["parse"] = {
+                **stages.get("parse", {}),
+                "status": "failed",
+                "failed_at": datetime.now(timezone.utc).isoformat(),
+                "error_message": status_response.error,
             }
-            
-            if status.state == "completed":
-                logger.info(f"Document {document_id} parsing completed - updating status")
-                stages["stages"]["parse"] = {
-                    **parse_stage,
-                    "started_at": getattr(status, 'started_at', settings.UNKNOWN_VALUE),
-                    "completed_at": getattr(status, 'completed_at', settings.UNKNOWN_VALUE),
-                    "progress": getattr(status, 'progress', settings.UNKNOWN_VALUE),
-                    "parser_used": getattr(status, 'parser_used', settings.UNKNOWN_VALUE),
-                    "ragparser_task_id": getattr(status, 'ragparser_task_id', settings.UNKNOWN_VALUE),
-                    "attempts": parse_stage.get("attempts", 1),
-                    "result": {
-                        "result_key": status.result_key,
-                        "table_keys": status.table_keys or []
-                    },
-                    "config": parse_stage.get("config", {}),
-                    "pages_processed": getattr(status, 'pages_processed', settings.UNKNOWN_VALUE),
-                    "document_info": getattr(status, 'document_info', {})
-                }
-                
-                # Process parsed results now that parsing is complete - call synchronously to ensure status is updated properly
-                try:
-                    # Extract document characteristics from status
-                    ragparser_status_data = stages["stages"]["parse"] 
-                    # Call process_parsed_results to extract and store document characteristics
-                    # Note: process_parsed_results will set status to "completed" and completed_at timestamp
-                    await process_parsed_results(
-                        str(document_id), 
-                        status.result_key, 
-                        status.table_keys, 
-                        ragparser_status_data
-                    )
-                    logger.info(f"Completed result processing for document {document_id}")
-                    # Refresh document from database since process_parsed_results committed changes
-                    session.refresh(document)
-                    return DocumentResponse.from_document(document)
-                except Exception as process_error:
-                    logger.error(f"Failed to process results for document {document_id}: {process_error}")
-                    # If result processing fails, still mark parse as completed
-                    stages["stages"]["parse"]["status"] = "completed"
-                    stages["stages"]["parse"]["completed_at"] = datetime.now(timezone.utc).isoformat()
-                    document.status_dict = stages
-                
-            elif status.state == "failed":
-                logger.error(f"Document {document_id} parsing failed: {status.error}")
-                stages["stages"]["parse"] = {
-                    **parse_stage,
-                    "status": "failed",
-                    "failed_at": status.failed_at,
-                    "error_message": status.error
-                }
-            
-            document.status_dict = stages
-            
-        except Exception as e:
-            logger.error(f"Failed to check RAGParser status during manual update: {e}")
-            # Don't fail the whole request, just log the error
+            status_dict["stages"] = stages
+            document.status_dict = status_dict
+            session.add(document)
+            session.commit()
+        else:
+            # Still pending or running, just log it
+            logger.info(f"RAGParser task {ragparser_task_id} is still in progress with state: {status_response.state}")
+            # Optionally update queue position or progress here if needed
+            status_dict = document.status_dict
+            stages = status_dict.get("stages", {})
+            stages["parse"] = {
+                **stages.get("parse", {}),
+                "queue_position": getattr(status_response, 'queue_position', None),
+                 "progress": getattr(status_response, 'progress', None)
+            }
+            status_dict["stages"] = stages
+            document.status_dict = status_dict
+            session.add(document)
+            session.commit()
+
+        session.refresh(document)
+        return DocumentResponse.from_document(document)
+
+    except Exception as e:
+        logger.warning(f"Failed to update document status from RAGParser: {e}")
+        raise HTTPException(status_code=500, detail=f"An error occurred while updating status: {e}")
+        #return {"message": f"Failed to update document status from RAGParser: {e}"}
+
+
+@router.delete("/{document_id}/chunks")
+async def delete_document_chunks(
+    current_user: Annotated[User, Depends(require_document_admin_permission)],
+    document_id: uuid.UUID,
+    session: SessionDep,
+) -> Dict[str, Any]:
+    """
+    Delete all chunks associated with a document.
+    Also resets the 'chunk' and 'index' stage statuses.
+    """
+    document = session.get(Document, str(document_id))
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+        
+    # Delete chunks from database
+    chunk_delete_statement = delete(DocumentChunk).where(DocumentChunk.document_id == str(document_id))
+    result = session.exec(chunk_delete_statement)
+    deleted_count = result.rowcount
     
-    # Update the document's updated_at timestamp
-    document.updated_at = datetime.now(timezone.utc)
+    # Reset chunk and index stages
+    status_dict = document.status_dict
+    stages = status_dict.get("stages", {})
+    
+    if "chunk" in stages:
+        stages["chunk"] = {"status": "waiting"}
+    if "index" in stages:
+        stages["index"] = {"status": "waiting"}
+        
+    status_dict["stages"] = stages
+    document.status_dict = status_dict
+    
     session.add(document)
     session.commit()
-    session.refresh(document)
     
-    logger.info(f"Updated document status for document {document_id}")
-    
-    return DocumentResponse.from_document(document)
+    return {
+        "message": f"Deleted {deleted_count} chunks and reset chunk/index stages for document {document_id}",
+        "deleted_count": deleted_count
+    }
 
 
-# Note: start_chunk_processing_async function has been replaced by pipeline_processor.process_stage
-# The modular approach now uses document_stages.py for individual stage implementations
+@router.get("/{document_id}/chunks/count")
+async def get_document_chunks_count(
+    current_user: Annotated[User, Depends(require_document_read_permission)],
+    document_id: uuid.UUID,
+    session: SessionDep,
+) -> Dict[str, Any]:
+    """Get the number of chunks for a document"""
+    count = session.exec(
+        select(func.count(DocumentChunk.id))
+        .where(DocumentChunk.document_id == str(document_id))
+    ).one()
+    
+    return {"document_id": document_id, "chunk_count": count}
+
+
+@router.post("/{document_id}/pipelines/{pipeline_name}/execute")
+async def execute_document_pipeline(
+    background_tasks: BackgroundTasks,
+    current_user: Annotated[User, Depends(require_document_upload_permission)],
+    document_id: uuid.UUID,
+    pipeline_name: str,
+    session: SessionDep,
+    config_overrides: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Execute a predefined pipeline for a document"""
+    document = session.get(Document, str(document_id))
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Use a background task to run the pipeline
+    background_tasks.add_task(
+        dynamic_pipeline_service.execute_pipeline,
+        pipeline_name=pipeline_name,
+        document_id=str(document_id),
+        session=session,
+        config_overrides=config_overrides,
+    )
+
+    return {"message": f"Pipeline '{pipeline_name}' has been initiated for document {document_id}."}
+
+
+@router.get("/{document_id}/pipelines/{pipeline_name}/status")
+async def get_pipeline_execution_status(
+    current_user: Annotated[User, Depends(require_document_read_permission)],
+    document_id: uuid.UUID,
+    pipeline_name: str,
+    session: SessionDep,
+) -> Any:
+    """
+    Get the status of the latest execution for a given pipeline on a document.
+    NOTE: This is a simplified implementation. A real-world scenario would require
+    storing and querying pipeline execution history.
+    """
+    document = session.get(Document, str(document_id))
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+        
+    # This simplified version just returns the current stage statuses from the document
+    # which reflects the last-run pipeline.
+    return {
+        "document_id": document.id,
+        "pipeline_name": pipeline_name,
+        "status": "No direct execution tracking, showing current document stage statuses",
+        "stage_statuses": document.status_dict.get("stages", {})
+    }

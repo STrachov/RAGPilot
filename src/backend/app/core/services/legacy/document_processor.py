@@ -13,7 +13,7 @@ from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline
 from docling.backend.docling_parse_v2_backend import DoclingParseV2DocumentBackend
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from app.core.config.constants import DocumentStatus, ChunkingStrategy, DEFAULT_CHUNKING_CONFIG
+from app.core.config.constants import DocumentStatus, ChunkingStrategy, ChunkConfig
 from app.core.models.document import Document, DocumentChunk
 from app.core.services.s3 import s3_service
 
@@ -154,7 +154,7 @@ class DocumentProcessor:
             List of DocumentChunk objects
         """
         # Get chunking configuration
-        chunking_config = DEFAULT_CHUNKING_CONFIG.copy()
+        chunking_config = ChunkConfig().model_dump()
         
         # Create chunks using the specified strategy
         strategy = chunking_config["strategy"]

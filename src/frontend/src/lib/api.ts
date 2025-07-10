@@ -141,6 +141,13 @@ export const API_ENDPOINTS = {
     PARSE_RESULTS: (id: string) => `/documents/${id}/parse-results`,
     UPDATE_STATUS: (id: string) => `/documents/${id}/update-status`,
   },
+  // Pipelines
+  PIPELINES: {
+    LIST: '/documents/pipelines',
+    STAGES: '/documents/stages',
+    EXECUTE: (id: string, name: string) => `/documents/${id}/pipelines/${name}/execute`,
+    STATUS: (id: string, name: string) => `/documents/${id}/pipelines/${name}/status`,
+  },
   // Users
   USERS: {
     LIST: '/users',
