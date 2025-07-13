@@ -28,15 +28,23 @@ class DocumentStageInfo(BaseModel):
     failed_at: Optional[str] = None
     error_message: Optional[str] = None
     attempts: Optional[int] = None
+
+    pipeline_name: Optional[str] = None
+    stage_name: Optional[str] = None
     config: Optional[Dict[str, Any]] = None
-    result: Optional[Dict[str, Any]] = None  # For storing RAGParser response
+
     execution_id: Optional[str] = None
-    # Additional fields found in actual database status
+    stage_id: Optional[str] = None
+    previous_stage_id: Optional[str] = None
+
+    # Additional fields for parsing stage
     parser_used: Optional[str] = None
     ragparser_task_id: Optional[str] = None
     queue_position: Optional[int] = None
     pages_processed: Optional[int] = None
     file_size: Optional[int] = None  # For upload stage
+    result: Optional[Dict[str, Any]] = None  # For storing stage result
+
 
 
 class DocumentStatusStructure(BaseModel):

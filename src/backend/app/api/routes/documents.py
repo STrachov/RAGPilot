@@ -21,6 +21,7 @@ from app.core.services.dynamic_pipeline import dynamic_pipeline_service
 from app.core.config.constants import ParseConfig, ParserType, ChunkConfig, IndexConfig, UploadConfig
 from app.core.services.config_service import config_service
 from app.core.services.ragparser_client import ragparser_client
+from app.core.exceptions import TaskNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -727,6 +728,11 @@ async def update_document_status(
             session.commit()
 
         session.refresh(document)
+        return DocumentResponse.from_document(document)
+    
+    except TaskNotFoundError:
+        logger.info(f"Task {ragparser_task_id} not found in RAGParser. Assuming it was completed and cleaned up.")
+        # The task doesn't exist, which is fine. Just return the document as is.
         return DocumentResponse.from_document(document)
 
     except Exception as e:

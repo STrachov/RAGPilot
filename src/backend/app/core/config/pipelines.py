@@ -19,7 +19,7 @@ standard_rag_pipeline = Pipeline(
             stage_type=PipelineStageType.CHUNK,
             function_name="chunk_stage",
             config={},
-            dependencies=["parse"],
+            dependencies=[PipelineStageType.PARSE],
             retry_attempts=2
         ),
         PipelineStage(
@@ -27,7 +27,7 @@ standard_rag_pipeline = Pipeline(
             stage_type=PipelineStageType.INDEX,
             function_name="index_stage",
             config={},
-            dependencies=["chunk"],
+            dependencies=[PipelineStageType.CHUNK],
             retry_attempts=2
         )
     ]

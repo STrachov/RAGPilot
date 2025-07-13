@@ -6,11 +6,11 @@ from sqlmodel import Session
 from io import BytesIO
 import json
 
-from app.core.models.document import Document, DocumentChunk
+from app.core.models.document import Document, DocumentChunk, DocumentStageInfo
 from app.core.services.s3 import s3_service
 from app.core.services.ragparser_client import ragparser_client
 from app.core.config.settings import settings
-
+from app.core.services.stage_registry import StageStatus
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,10 @@ class DocumentStages:
     ) -> Dict[str, Any]:
         """Handle document parsing via RAGParser"""
         try:
-            logger.info(f"Starting parse stage for document {document.id} with context {context}")
+            start_time = datetime.now(timezone.utc)
+            execution_id = context.get("execution_id") if context else None
+            stage_id = str(uuid.uuid4())
+            logger.info(f"Starting parse stage for document {document.id} with context {str(context)}")
             
             # Generate presigned URL for RAGParser to access the document
             document_url = s3_service.get_file_url(document.file_path, expiration=3600)
@@ -50,74 +53,49 @@ class DocumentStages:
                 parse_config = global_parse_config.model_dump()
             logger.info(f"Parse config: {parse_config}")
 
+            callback_url = context.get("callback_url") if context else None
+            
+            # The callback payload should contain what we need to identify the execution
+            callback_payload = context.copy() if context else {}
+            callback_payload.pop("callback_url", None)  # RAGParser expects it separately
+            callback_payload["execution_id"] = execution_id
+            
+            # Clean up parse_config to only contain parser-specific options
+            parser_options = parse_config.copy()
+            parser_options.pop("context", None)
+            parser_options.pop("previous_results", None)
+
             # Submit document to RAGParser
             ragparser_response = await ragparser_client.submit_document_for_parsing(
                 document_url=document_url,
                 options={
-                    "document_id": document.id,
+                    "document_id": str(document.id),
                     "filename": document.filename,
                     "content_type": document.content_type,
-                    **parse_config
+                    **parser_options
                 },
+                callback_url=callback_url,
+                callback_payload=callback_payload,
             )
-            
-            # Update document with task ID
-            document.ragparser_task_id = ragparser_response.task_id
-            
-            # Update stage status to running
-            status_dict = document.status_dict
-            if "stages" not in status_dict:
-                status_dict["stages"] = {}
-            
-            if "parse" not in status_dict["stages"]:
-                status_dict["stages"]["parse"] = {"executions": []}
-            elif "executions" not in status_dict["stages"]["parse"]:
-                status_dict["stages"]["parse"]["executions"] = []
-
-            status_dict["stages"]["parse"]["executions"].append({
-                "stage_execution_id": stage_execution_id,
-                "status": "running",
-                "started_at": datetime.now(timezone.utc).isoformat(),
-                "ragparser_task_id": ragparser_response.task_id,
-                "pipeline_name": context.get("pipeline_name") if context else None,
-            })
-            
-            # Set top-level status for the stage
-            status_dict["stages"]["parse"]["status"] = "running"
-            
-            document.status_dict = status_dict
-            
-            session.add(document)
-            session.commit()
-            
+                        
             logger.info(f"Document {document.id} submitted to RAGParser with task_id: {ragparser_response.task_id}")
             
-            return {
-                "status": "running", 
-                "task_id": ragparser_response.task_id,
-                "queue_position": ragparser_response.queue_position
-            }
+            return DocumentStageInfo(
+                status= StageStatus.RUNNING,
+                ragparser_task_id=ragparser_response.task_id,
+                queue_position=ragparser_response.queue_position,
+                config=parse_config,
+            )
             
         except Exception as e:
             logger.error(f"Parse stage failed for document {document.id}: {e}")
             
-            # Update stage status to failed
-            status_dict = document.status_dict
-            stages = status_dict.get("stages", {})
-            stages["parse"] = {
-                **stages.get("parse", {}),
-                "status": "failed",
-                "failed_at": datetime.now(timezone.utc).isoformat(),
-                "error_message": str(e),
-                "attempts": stages.get("parse", {}).get("attempts", 0) + 1
-            }
-            status_dict["stages"] = stages
-            document.status_dict = status_dict
-            
-            session.add(document)
-            session.commit()
-            raise
-    
+            return DocumentStageInfo(
+                status=StageStatus.FAILED,
+                failed_at=datetime.now(timezone.utc).isoformat(),
+                error_message=str(e),
+            )   
+         
     async def chunk_stage(
         self, 
         document: Document, 

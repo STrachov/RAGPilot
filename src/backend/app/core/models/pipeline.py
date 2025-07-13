@@ -2,7 +2,7 @@ from enum import Enum
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 from app.core.config.constants import StageStatus, PipelineStageType
-
+from app.core.models.document import DocumentStageInfo
 
 
 class PipelineStage(BaseModel):
@@ -107,14 +107,6 @@ class PipelineExecution(BaseModel):
                 return False
         return True
 
-
-class StageResult(BaseModel):
+class StageResult(DocumentStageInfo):
     """Result of executing a single stage"""
-    stage_name: str
-    status: StageStatus
-    result_data: Dict[str, Any] = Field(default_factory=dict)
-    error_message: Optional[str] = None
-    execution_time_ms: Optional[int] = None
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
-    attempts: int = 1 
+    pass

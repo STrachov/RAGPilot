@@ -12,7 +12,8 @@ from sqlmodel import Session
 from app.core.models.document import Document
 from app.core.models.pipeline import PipelineStage, StageResult, StageStatus
 from app.core.logger import app_logger as logger
-
+import uuid
+from app.core.config.pipelines import predefined_pipelines
 
 class StageFunction:
     """Wrapper for stage execution functions"""
@@ -80,7 +81,18 @@ class StageRegistry:
         """Execute a registered stage with error handling and timing"""
         start_time = datetime.now(timezone.utc)
         context = context or {}
-        
+        previous_stage_name = stage.dependencies[0] if stage.dependencies else None
+        previous_stage = document.status_dict.get("stages", {}).get(previous_stage_name, None)
+
+        generic_kwargs: Dict[str, Any] = {
+            "pipeline_name": context.get("pipeline_name"),
+            "stage_name": stage.name,
+            "started_at": start_time.isoformat(),
+            "config": stage.config,
+            "execution_id": context.get("execution_id"),
+            "stage_id": str(uuid.uuid4()),
+            "previous_stage_id": previous_stage.stage_id,
+        }
         try:
             logger.info(f"Executing stage '{stage.name}' for document {document.id}")
             
@@ -97,7 +109,7 @@ class StageRegistry:
             
             # Execute stage with timeout if specified
             timeout = stage.timeout_seconds or stage_func.timeout_seconds
-            
+            logger.info(f"Stage '{stage.name}' starting ...")
             if timeout:
                 result = await asyncio.wait_for(
                     stage_func.func(document, session, execution_config),
@@ -105,46 +117,33 @@ class StageRegistry:
                 )
             else:
                 result = await stage_func.func(document, session, execution_config)
-            
-            end_time = datetime.now(timezone.utc)
-            execution_time_ms = int((end_time - start_time).total_seconds() * 1000)
-            
-            logger.info(f"Stage '{stage.name}' completed successfully in {execution_time_ms}ms")
-            
+                
+            result_kwargs = result.model_dump()
+            logger.info(f"Stage '{stage.name}' started successfully with result: {str(result_kwargs)}")
             return StageResult(
-                stage_name=stage.name,
-                status=StageStatus.COMPLETED,
-                result_data=result if isinstance(result, dict) else {"result": result},
-                execution_time_ms=execution_time_ms,
-                started_at=start_time.isoformat(),
-                completed_at=end_time.isoformat()
+                **generic_kwargs,
+                **result_kwargs
             )
+            
             
         except asyncio.TimeoutError:
             error_msg = f"Stage '{stage.name}' timed out after {timeout} seconds"
             logger.error(error_msg)
             return StageResult(
-                stage_name=stage.name,
+                **generic_kwargs,
                 status=StageStatus.FAILED,
                 error_message=error_msg,
-                started_at=start_time.isoformat()
             )
             
         except Exception as e:
             error_msg = f"Stage '{stage.name}' failed: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            
-            end_time = datetime.now(timezone.utc)
-            execution_time_ms = int((end_time - start_time).total_seconds() * 1000)
-            
             return StageResult(
-                stage_name=stage.name,
+                **generic_kwargs,
                 status=StageStatus.FAILED,
                 error_message=error_msg,
-                execution_time_ms=execution_time_ms,
-                started_at=start_time.isoformat(),
-                completed_at=end_time.isoformat()
             )
+
     
     def validate_dependencies(self, stages: List[PipelineStage]) -> List[str]:
         """Validate that all stage dependencies are registered"""

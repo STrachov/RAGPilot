@@ -131,11 +131,12 @@ class PipelineExecutor:
         logger.info(f"Executing ready stages: {[s.name for s in ready_stages]} for document {document.id}")
         
         # Execute all ready stages concurrently
-        tasks = [
-            self._execute_single_stage(stage, document, session, execution, config_overrides)
-            for stage in ready_stages
-        ]
-        await asyncio.gather(*tasks)
+        # tasks = [
+        #     self._execute_single_stage(stage, document, session, execution, config_overrides)
+        #     for stage in ready_stages
+        # ]
+        # await asyncio.gather(*tasks)
+        self._execute_single_stage(ready_stages[0], document, session, execution, config_overrides)
     
     async def _execute_single_stage(
         self,
@@ -148,25 +149,15 @@ class PipelineExecutor:
         """Execute a single stage with retries"""
         
         execution.current_stage = stage.name
-        execution.stage_statuses[stage.name] = StageStatus.RUNNING
-        
 
-        # Update document status to reflect current stage
-        await self._update_document_stage_status(
-            document, 
-            session, 
-            stage.name, 
-            "running", 
-            execution_id = execution.execution_id
-            )
-        
         # Prepare execution context
         context = {
             "callback_url": f"{settings.SERVER_HOST.rstrip('/')}{settings.API_V1_STR}/hooks/stage_completion",
             "document_id": document.id,
             "execution_id": execution.execution_id,
             "pipeline_name": execution.pipeline_name,
-            "previous_results": execution.stage_results
+            "stage_name": execution.current_stage
+            #"previous_results": execution.stage_results
         }
 
         # Apply config overrides
@@ -187,37 +178,33 @@ class PipelineExecutor:
         )
         
         # Execute with retries
-        last_error = None
-        for attempt in range(stage.retry_attempts):
-            try:
-                result = await stage_registry.execute_stage(
-                    stage_to_execute, document, session, context
-                )
+        result_data = {}
+        try:
+            result = await stage_registry.execute_stage(
+                stage_to_execute, document, session, context
+            )
+            logger.info(f"Stage '{stage.name}' was run with context {str(context)}")
+
+            execution.stage_statuses[stage.name] = StageStatus.RUNNING  
+            result_data = result.model_dump()
+            logger.info(f"Stage '{stage.name}' result: {str(result_data)}")
                 
-                execution.stage_results[stage.name] = result.result_data
-                execution.stage_statuses[stage.name] = result.status
-                
-                if result.status == StageStatus.COMPLETED:
-                    await self._update_document_stage_status(document, session, stage.name, "completed", result.result_data)
-                    logger.info(f"Stage '{stage.name}' completed successfully on attempt {attempt + 1}")
-                    return
-                else:
-                    last_error = result.error_message
-                    if attempt < stage.retry_attempts - 1:
-                        logger.warning(f"Stage '{stage.name}' failed on attempt {attempt + 1}, retrying...")
-                        await asyncio.sleep(1)  # Brief delay before retry
-                    
-            except Exception as e:
-                last_error = str(e)
-                if attempt < stage.retry_attempts - 1:
-                    logger.warning(f"Stage '{stage.name}' failed on attempt {attempt + 1}, retrying...")
-                    await asyncio.sleep(1)
+        except Exception as e:
+            execution.stage_statuses[stage.name] = StageStatus.FAILED  
+            result_data["error_message"]= str(e)
+            logger.info(f"Stage '{stage.name}' failed with error {str(e)}")
         
-        # All retries failed
-        execution.stage_statuses[stage.name] = StageStatus.FAILED
-        await self._update_document_stage_status(document, session, stage.name, "failed", {"error_message": last_error})
-        logger.error(f"Stage '{stage.name}' failed after {stage.retry_attempts} attempts: {last_error}")
-    
+        # Update document status to reflect current stage
+        await self._update_document_stage_status(
+            document,
+            session,
+            stage.name,
+            execution.stage_statuses[stage.name],
+            execution.execution_id,
+            result_data,
+        )
+
+        
     async def _update_document_stage_status(
         self,
         document: Document,

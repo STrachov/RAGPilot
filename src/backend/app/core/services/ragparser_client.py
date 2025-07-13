@@ -6,6 +6,7 @@ import aiohttp
 from pydantic import BaseModel
 
 from app.core.config.settings import settings
+from app.core.exceptions import TaskNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,7 @@ class RAGParserClient:
                         data = await response.json()
                         return RAGParserStatusResponse(**data)
                     elif response.status == 404:
-                        raise Exception(f"Task {task_id} not found")
+                        raise TaskNotFoundError(task_id)
                     else:
                         error_text = await response.text()
                         raise Exception(f"Status request failed: {response.status} - {error_text}")
