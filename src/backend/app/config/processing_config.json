@@ -6,7 +6,7 @@
     "extract_images": false,
     "ocr_language": "auto",
     "preserve_formatting": true,
-    "handle_multi_column": true
+    "handle_multi_column": false
   },
   "chunk_config": {
     "strategy": "recursive",
@@ -24,5 +24,5 @@
     "use_bm25": true,
     "top_n_retrieval": 10
   },
-  "default_pipeline_name": "standard_rag"
+  "pipeline_name": "standard_rag"
 }

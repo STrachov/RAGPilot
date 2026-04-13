@@ -4,7 +4,6 @@ import React, { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { documentsService } from "@/services/documents";
 import { Document } from "@/types/ragpilot";
-import { ParserSelectionModal } from "./ParserSelectionModal";
 
 interface DocumentActionsDropdownProps {
   document: Document;
@@ -165,12 +164,7 @@ export const DocumentActionsDropdown: React.FC<DocumentActionsDropdownProps> = (
         </>
       )}
 
-      {/* Parser Selection Modal */}
-      <ParserSelectionModal
-        isOpen={isParserModalOpen}
-        onClose={() => setIsParserModalOpen(false)}
-        document={document}
-      />
+     
     </div>
   );
 }; 

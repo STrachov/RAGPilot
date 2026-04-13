@@ -49,11 +49,6 @@ class DocumentSourceType(str, Enum):
     OTHER = "other"
 
 
-class PipelineStageType(str, Enum):
-    """Types of pipeline stages"""
-    PARSE = "parse"
-    CHUNK = "chunk"
-    INDEX = "index"
 
 
 class DocumentStatus(str, Enum):
@@ -66,14 +61,6 @@ class DocumentStatus(str, Enum):
     COMPLETED = "completed"      # All processing completed successfully
     FAILED = "failed"            # Processing failed at any stage
 
-
-class StageStatus(str, Enum):
-    """Status of individual processing stages"""
-    WAITING = "waiting"     # Stage is waiting to be started
-    RUNNING = "running"     # Stage is currently processing
-    COMPLETED = "completed" # Stage completed successfully
-    FAILED = "failed"       # Stage failed with error
-    SKIPPED = "skipped"     # Stage was skipped (e.g., already completed)
 
 
 
@@ -172,7 +159,7 @@ class GlobalProcessingConfig(BaseModel):
     parse_config: ParseConfig = Field(default_factory=ParseConfig)
     chunk_config: ChunkConfig = Field(default_factory=ChunkConfig)
     index_config: IndexConfig = Field(default_factory=IndexConfig)
-    default_pipeline_name: str = "standard_rag"
+    pipeline_name: str = "standard_rag"
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage"""
@@ -180,7 +167,7 @@ class GlobalProcessingConfig(BaseModel):
             "parse_config": self.parse_config.model_dump(),
             "chunk_config": self.chunk_config.model_dump(),
             "index_config": self.index_config.model_dump(),
-            "default_pipeline_name": self.default_pipeline_name,
+            "pipeline_name": self.pipeline_name,
         }
     
     @classmethod
@@ -190,7 +177,7 @@ class GlobalProcessingConfig(BaseModel):
             parse_config=ParseConfig(**data.get("parse_config", {})),
             chunk_config=ChunkConfig(**data.get("chunk_config", {})),
             index_config=IndexConfig(**data.get("index_config", {})),
-            default_pipeline_name=data.get("default_pipeline_name", "standard_rag"),
+            pipeline_name=data.get("pipeline_name", "standard_rag"),
         )
 
 

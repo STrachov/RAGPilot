@@ -48,22 +48,28 @@ app = FastAPI(
 )
 
 # Add middleware
-app.add_middleware(RequestLoggingMiddleware)
-app.add_middleware(ErrorHandlingMiddleware)
+#app.add_middleware(RequestLoggingMiddleware)
+#app.add_middleware(ErrorHandlingMiddleware)
 
 # Add error handlers
 add_error_handlers(app)
-
-# Set up CORS middleware
-if settings.BACKEND_CORS_ORIGINS:
-    app.add_middleware(
-        CORSMiddleware,
-        #allow_origins=settings.all_cors_origins,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,  # Change this
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# # Set up CORS middleware
+# if settings.BACKEND_CORS_ORIGINS:
+#     app.add_middleware(
+#         CORSMiddleware,
+#         #allow_origins=settings.all_cors_origins,
+#         allow_origins=["*"],
+#         allow_credentials=True,
+#         allow_methods=["*"],
+#         allow_headers=["*"],
+#     )
 
 # Include API router
 app.include_router(api_router, prefix="/api")

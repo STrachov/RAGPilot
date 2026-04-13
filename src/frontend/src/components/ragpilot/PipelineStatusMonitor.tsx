@@ -192,11 +192,11 @@ export const PipelineStatusMonitor: React.FC<PipelineStatusMonitorProps> = ({
                 {stageInfo.started_at && (
                   <div>Started: {new Date(stageInfo.started_at).toLocaleTimeString()}</div>
                 )}
-                {stageInfo.completed_at && (
-                  <div>Completed: {new Date(stageInfo.completed_at).toLocaleTimeString()}</div>
+                {stageInfo.finished_at && (
+                  <div>Completed: {new Date(stageInfo.finished_at).toLocaleTimeString()}</div>
                 )}
-                {stageInfo.failed_at && (
-                  <div>Failed: {new Date(stageInfo.failed_at).toLocaleTimeString()}</div>
+                {stageInfo.finished_at && (
+                  <div>Failed: {new Date(stageInfo.finished_at).toLocaleTimeString()}</div>
                 )}
                 {stageInfo.attempts && stageInfo.attempts > 1 && (
                   <div>Attempts: {stageInfo.attempts}</div>

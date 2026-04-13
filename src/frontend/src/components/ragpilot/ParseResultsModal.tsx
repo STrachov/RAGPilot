@@ -10,13 +10,17 @@ interface ParseResultsModalProps {
   onClose: () => void;
   document: Document;
 }
-
-interface ParseResult {
-  document_id: string;
-  parse_result: any;
+// Fields to return:
+// document_id: string;
+// result: Record<string, any>;
+// status: string;
+// finished_at?: string;
+// started_at?: string;
+interface ParseStatus {
   status: string;
-  completed_at?: string;
-  parser_type: string;
+  result: Record<string, any>;
+  finished_at?: string;
+  started_at?: string;
 }
 
 export const ParseResultsModal: React.FC<ParseResultsModalProps> = ({
@@ -24,7 +28,7 @@ export const ParseResultsModal: React.FC<ParseResultsModalProps> = ({
   onClose,
   document
 }) => {
-  const [parseResult, setParseResult] = useState<ParseResult | null>(null);
+  const [parseResult, setParseResult] = useState<ParseStatus | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,47 +36,26 @@ export const ParseResultsModal: React.FC<ParseResultsModalProps> = ({
     setIsLoading(true);
     setError(null);
     try {
+      console.log('Document :', JSON.stringify(document, null, 2));
       // First try to get from document status if available
       if (typeof document.status === 'object' && document.status.stages?.parse) {
-        const parseStage = document.status.stages.parse as any;
-        //console.log('Full Parse stage data:', JSON.stringify(parseStage, null, 2)); // Enhanced debug log
+        const parseStage = document.status.stages.parse as ParseStatus;
+        //const parseStage: ParseStatus = document.status.stages.parse;
+        console.log('Full Parse stage data:', JSON.stringify(parseStage, null, 2)); // Enhanced debug log
         
         if (parseStage.status === 'completed') {
-          // Get the actual RAGParser result from the parse stage
-          const ragparserResult = parseStage.result || {};
-          //console.log('RAGParser result:', JSON.stringify(ragparserResult, null, 2)); // Debug log
           
-          const parserUsed = parseStage.parser_used || 'unknown';
+          const parserUsed = parseStage.result.parser_version || 'unknown';
           console.log('Parser used:', parserUsed);
           
-          // Always use the data from document status for completed documents
-          const result: ParseResult = {
-            document_id: document.id,
-            status: parseStage.status,
-            completed_at: parseStage.completed_at,
-            parser_type: parserUsed,
-            parse_result: ragparserResult
-          };
-          
-          setParseResult(result);
+                  
+          setParseResult(parseStage);
           setIsLoading(false);
           //return;
         }
       }
       
-      // Try API call for non-completed documents or as fallback
-      try {
-        const result = await documentsService.getParseResults(document.id);
-        console.log('API parse result:', JSON.stringify(result, null, 2)); // Debug log
-        setParseResult(result);
-      } catch (apiError: any) {
-        // If API fails and we have a completed parse stage, show helpful message
-        if (typeof document.status === 'object' && document.status.stages?.parse?.status === 'completed') {
-          setError('Parse results are being processed. Please wait a moment and try again.');
-        } else {
-          throw apiError; // Re-throw if it's not a completed document
-        }
-      }
+      
     } catch (err: any) {
       setError(err?.response?.data?.detail || err?.message || 'Failed to fetch parse results');
     } finally {
@@ -329,9 +312,9 @@ export const ParseResultsModal: React.FC<ParseResultsModalProps> = ({
                   <>
                     <div>
                       <span className="font-medium text-gray-700 dark:text-gray-300">Parser:</span>
-                      <div className={`${parseResult.parser_type === 'unknown' ? 'text-orange-600 dark:text-orange-400' : 'text-gray-600 dark:text-gray-400'}`}>
-                        {parseResult.parser_type}
-                        {parseResult.parser_type === 'unknown' && (
+                      <div className={`${parseResult.status.result.parser_version === 'unknown' ? 'text-orange-600 dark:text-orange-400' : 'text-gray-600 dark:text-gray-400'}`}>
+                        {parseResult.status.result.parser_version}
+                        {parseResult.status.result.parser_version === 'unknown' && (
                           <span className="text-xs ml-1">(detection failed)</span>
                         )}
                       </div>
@@ -339,19 +322,19 @@ export const ParseResultsModal: React.FC<ParseResultsModalProps> = ({
                     <div>
                       <span className="font-medium text-gray-700 dark:text-gray-300">Parse Status:</span>
                       <span className={`ml-2 px-2 py-1 rounded text-xs ${
-                        parseResult.status === 'completed' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
-                        parseResult.status === 'running' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200' :
-                        parseResult.status === 'failed' ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' :
+                        parseResult.status.status === 'completed' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
+                        parseResult.status.status === 'running' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200' :
+                        parseResult.status.status === 'failed' ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' :
                         'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200'
                       }`}>
-                        {parseResult.status}
+                        {parseResult.status.status}
                       </span>
                     </div>
-                    {parseResult.completed_at && (
+                    {parseResult.finished_at && (
                       <div>
                         <span className="font-medium text-gray-700 dark:text-gray-300">Completed:</span>
                         <div className="text-gray-600 dark:text-gray-400 text-xs">
-                          {new Date(parseResult.completed_at).toLocaleString()}
+                          {new Date(parseResult.finished_at).toLocaleString()}
                         </div>
                       </div>
                     )}
@@ -364,7 +347,7 @@ export const ParseResultsModal: React.FC<ParseResultsModalProps> = ({
             {renderDocumentMetadata()}
 
             {/* Render Parse Result Files */}
-            {parseResult?.parse_result && renderResultFiles(parseResult.parse_result)}
+            {parseResult?.status.result.result_key && renderResultFiles(parseResult.status.result)}
           </div>
         )}
 

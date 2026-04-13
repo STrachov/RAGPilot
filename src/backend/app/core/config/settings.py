@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "RAGPilot"
     DOMAIN: str = "localhost"
-    SERVER_HOST: str = "http://localhost:8000"
+    SERVER_HOST: str = "http://localhost:8080"
     FRONTEND_HOST: str = "http://localhost:3000"
     ENVIRONMENT: Literal["local", "staging", "production"] = "local"
     STACK_NAME: str = "full-stack-ai-project"

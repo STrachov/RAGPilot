@@ -38,12 +38,12 @@ class DocumentInfo(BaseModel):
 class RAGParserStatusResponse(BaseModel):
     """Status response from RAGParser with complete format"""
     state: str  # "waiting", "running", "completed", "failed"
+    task_id: str
     progress: float
     result_key: Optional[str] = None
     table_keys: Optional[List[str]] = None
     started_at: Optional[str] = None  # ISO datetime string
     completed_at: Optional[str] = None  # ISO datetime string
-    failed_at: Optional[str] = None  # ISO datetime string
     parser_used: Optional[str] = None
     pages_processed: Optional[int] = None
     document_info: Optional[DocumentInfo] = None
@@ -84,9 +84,9 @@ class RAGParserClient:
             url=document_url,
             options=options or {},
             callback_url=callback_url,
-            callback_payload=callback_payload
+            callback_payload=callback_payload or {}
         )
-        
+        logger.info(f"Request data: {request_data.model_dump()}")
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
             try:
                 headers = {
@@ -100,7 +100,7 @@ class RAGParserClient:
                     
                 async with session.post(
                     f"{self.base_url}/upload",
-                    json=request_data.dict(),
+                    json=request_data.model_dump(),
                     headers=headers
                 ) as response:
                     if response.status == 200:

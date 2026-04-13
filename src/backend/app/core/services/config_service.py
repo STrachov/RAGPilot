@@ -100,6 +100,16 @@ class ConfigService:
             logger.error(f"Failed to update global configuration: {e}")
             raise
     
+    def get_stage_config(self, stage_name: str) -> Dict[str, Any]:
+        """Get current stage configuration as dictionary"""
+        global_config = self.get_global_config()
+        try:
+            stage_config = getattr(global_config, f'{stage_name}_config')
+            return stage_config.model_dump()
+        except Exception as e:
+            logger.error(f"Failed to get stage configuration for {stage_name}: {e}")
+            raise
+    
     def get_parse_config(self) -> Dict[str, Any]:
         """Get current parse configuration as dictionary"""
         global_config = self.get_global_config()

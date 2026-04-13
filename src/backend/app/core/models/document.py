@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, TYPE_CHECKING, Dict, Any
 import json
 import uuid
@@ -7,8 +7,13 @@ from sqlmodel import Field, SQLModel, Relationship
 from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey
 from pydantic import BaseModel, field_validator
 
-from app.core.config.constants import DocumentSourceType
-from app.core.config.constants import ParseConfig, ChunkConfig, IndexConfig
+from app.core.config.constants import DocumentSourceType, ParseConfig
+from app.core.models.pipeline import PipelineStageResult
+
+import logging
+from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
 
 # Forward reference for circular imports
 if TYPE_CHECKING:
@@ -18,32 +23,22 @@ else:
     RetrievalResult_type = "RetrievalResult"
 
 # Pydantic models for API responses
-class DocumentStageInfo(BaseModel):
+class DocumentStageInfo(PipelineStageResult):
     """Stage information within document status"""
     #model_config = {"extra": "allow"}  # Allow extra fields to pass through
-    
-    status: str
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
-    failed_at: Optional[str] = None
-    error_message: Optional[str] = None
-    attempts: Optional[int] = None
-
-    pipeline_name: Optional[str] = None
-    stage_name: Optional[str] = None
+#{"stages": {
+# "upload": {
+# "status": "completed", 
+# "started_at": "2025-07-23T12:42:14.551284+00:00", 
+# "finished_at": "2025-07-23T12:42:15.792561+00:00", 
+# "result": {
+# "file_path": "documents/7ec1a01c-3c2c-470d-b583-3b3cc099af75.pdf", "file_size": 218432}}, 
+# "parse": {"status": "waiting"}, "chunk": {"status": "waiting"}, "index": {"status": "waiting"}}}
     config: Optional[Dict[str, Any]] = None
 
     execution_id: Optional[str] = None
     stage_id: Optional[str] = None
     previous_stage_id: Optional[str] = None
-
-    # Additional fields for parsing stage
-    parser_used: Optional[str] = None
-    ragparser_task_id: Optional[str] = None
-    queue_position: Optional[int] = None
-    pages_processed: Optional[int] = None
-    file_size: Optional[int] = None  # For upload stage
-    result: Optional[Dict[str, Any]] = None  # For storing stage result
 
 
 
@@ -76,16 +71,10 @@ class DocumentResponse(BaseModel):
                 parsed = json.loads(v)
                 return parsed
             except json.JSONDecodeError:
-                # Return default structure for invalid JSON
-                return {
-                    "stages": {
-                        "upload": {"status": "completed"},
-                        "parse": {"status": "waiting"},
-                        "chunk-index": {"status": "waiting"}
-                    }
-                }
+                logger.error(f"Invalid status JSON: {v}")
+                raise HTTPException(status_code=400, detail="Invalid status JSON")
         return v
-
+    
     @classmethod
     def from_document(cls, document: "Document") -> "DocumentResponse":
         """Create DocumentResponse from Document model"""
@@ -197,7 +186,7 @@ class Document(SQLModel, table=True):
         if self.metadata_json is None:
             return None
         return json.loads(self.metadata_json)
-    
+
     @metadata_dict.setter
     def metadata_dict(self, value: Optional[Dict[str, Any]]):
         """Set metadata from a dictionary (static document characteristics only)"""
@@ -211,43 +200,45 @@ class Document(SQLModel, table=True):
         """Get status as a dictionary with processing stages structure"""
         if not self.status:
             # Return default structure if status is empty
-            return self._get_default_status_structure()
+            return self.get_default_status_structure()
         
         try:
             return json.loads(self.status)
         except (json.JSONDecodeError, TypeError):
             # If status contains old simple string, convert it
-            return self._get_default_status_structure()
+            return self.get_default_status_structure()
     
     @status_dict.setter
     def status_dict(self, value: Dict[str, Any]):
         """Set status from a dictionary"""
         self.status = json.dumps(value)
 
-    def _get_default_status_structure(self) -> Dict[str, Any]:
+    def get_default_status_structure(self) -> Dict[str, Any]:
         """Get the default status structure with simplified format"""
-        return {
-            "stages": {
-                "upload": {
-                    "status": "completed",
-                    "started_at": self.created_at.isoformat() if self.created_at else datetime.utcnow().isoformat(),
-                    "completed_at": self.created_at.isoformat() if self.created_at else datetime.utcnow().isoformat(),
-                    "attempts": 1
-                },
-                "parse": {
-                    "status": "waiting",
-                    "config": ParseConfig().model_dump()
-                },
-                "chunk": {
-                    "status": "waiting",
-                    "config": ChunkConfig().model_dump()
-                },
-                "index": {
-                    "status": "waiting",
-                    "config": IndexConfig().model_dump()
-                }
-            }
+        from app.core.services.dynamic_pipeline import dynamic_pipeline_service
+        from app.core.services.config_service import config_service
+
+        global_config = config_service.get_global_config()  
+        pipeline_name = global_config.pipeline_name
+        logger.info(f"Pipeline name: {pipeline_name}")
+        pipeline = dynamic_pipeline_service.get_pipeline(pipeline_name)
+        logger.info(f"Pipeline: {pipeline}")
+        if not pipeline:
+            logger.error(f"Pipeline '{pipeline_name}' not found")
+            raise HTTPException(status_code=404, detail=f"Pipeline '{pipeline_name}' not found")
+        
+        pipeline_stages = pipeline.stages
+        result = {}
+        result["stages"] = {}
+        result["stages"]["upload"] = {
+            "status": "waiting",
         }
+        for stage in pipeline_stages:
+            result["stages"][stage.name] = {
+                "status": "waiting",
+            }
+        return result
+
     
     @property
     def current_stage(self) -> str:

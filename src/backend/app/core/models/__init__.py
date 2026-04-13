@@ -11,7 +11,7 @@ from app.core.models.document import Document, DocumentChunk
 from app.core.models.monitoring import Query, RetrievalResult, Response, Feedback
 from app.core.models.pipeline import (
     Pipeline, PipelineStage, PipelineStageType, PipelineExecution, 
-    StageResult, StageStatus
+    PipelineStageResult
 )
 
 __all__ = [
@@ -29,6 +29,5 @@ __all__ = [
     "PipelineStage",
     "PipelineStageType",
     "PipelineExecution",
-    "StageResult",
-    "StageStatus"
+    "PipelineStageResult",
 ]

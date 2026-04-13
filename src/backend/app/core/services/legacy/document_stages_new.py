@@ -38,7 +38,7 @@ class DocumentStagesService:
             stages["upload"] = {
                 **stages.get("upload", {}),
                 "status": "completed",
-                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
                 "file_size": document.file_size,
                 "content_type": document.content_type
             }
@@ -182,7 +182,7 @@ class DocumentStagesService:
             stages["chunk"] = {
                 **stages.get("chunk", {}),
                 "status": "completed",
-                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
                 "chunks_created": len(chunks),
                 "config": chunk_config
             }
@@ -244,7 +244,7 @@ class DocumentStagesService:
             stages["index"] = {
                 **stages.get("index", {}),
                 "status": "completed",
-                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
                 "config": index_config
             }
             
@@ -299,7 +299,7 @@ class DocumentStagesService:
             if status.state == "completed":
                 parse_stage.update({
                     "status": "completed",
-                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
                     "result": {
                         "result_key": status.result_key,
                         "table_keys": getattr(status, 'table_keys', []),

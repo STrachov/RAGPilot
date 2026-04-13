@@ -1,16 +1,15 @@
 "use client";
 
-import React, { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import React, { useState, useEffect } from "react";
+import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
 import { documentsService } from "@/services/documents";
 import { Document, DocumentStageInfo, getOverallStatus } from "@/types/ragpilot";
-import { ParserSelectionModal } from "./ParserSelectionModal";
 import { ParseResultsModal } from "./ParseResultsModal";
 import { PipelineSelectionModal } from "./PipelineSelectionModal";
 
 interface StageError {
   error_message?: string;
-  failed_at?: string;
+  finished_at?: string;
   attempts?: number;
 }
 
@@ -106,7 +105,7 @@ const StageDropdown = ({
         ];
       case "parse":
         return [
-          { id: "reparse", label: "Configure and Parse", icon: "settings" },
+          { id: "start-parse", label: "Start Parse", icon: "play" },
           { id: "update-status", label: "Update Status", icon: "refresh" },
           ...(stageInfo?.status === "completed" ? [{ id: "view-results", label: "View Parse Results", icon: "eye" }] : []),
           ...(stageInfo?.status === "failed" ? [{ id: "view-error", label: "View Error", icon: "error" }] : [])
@@ -266,12 +265,7 @@ const StageDropdown = ({
         </>
       )}
 
-      {/* Parser Selection Modal */}
-      <ParserSelectionModal
-        isOpen={isParserModalOpen}
-        onClose={() => setIsParserModalOpen(false)}
-        document={document}
-      />
+     
 
       {/* Parse Results Modal */}
       <ParseResultsModal
@@ -319,11 +313,11 @@ const ErrorModal = ({
             </div>
           </div>
           
-          {error?.failed_at && (
+          {error?.finished_at && (
             <div>
               <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Failed At:</label>
               <div className="mt-1 text-sm text-gray-600 dark:text-gray-400">
-                {new Date(error.failed_at).toLocaleString()}
+                {new Date(error.finished_at).toLocaleString()}
               </div>
             </div>
           )}
@@ -363,9 +357,18 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
   
   const queryClient = useQueryClient();
 
+  // Load available stages using React Query
+  const { data: availableStages, isLoading: isLoadingStages } = useQuery({
+    queryKey: ['availableStages'],
+    queryFn: documentsService.getAvailableStages,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+console.log('availableStages', availableStages);
+
+
   // Mutation for starting stages
   const startStageMutation = useMutation({
-    mutationFn: ({ stage }: { stage: 'parse' | 'chunk' | 'index' }) => {
+    mutationFn: ({ stage }: { stage: string }) => {
       console.log(`Starting ${stage} stage for document ${document.id}`);
       return documentsService.startDocumentStage(document.id, stage);
     },
@@ -405,6 +408,27 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
   });
 
   // Mutation for updating document status
+  const updateStatusMutation = useMutation({
+    mutationFn: () => documentsService.updateDocumentStatus(document.id),
+    onSuccess: (updatedDoc) => {
+      // Update the document in the cache
+      console.log('Updated document:', updatedDoc);
+      queryClient
+      .getQueryCache()
+      .findAll({ queryKey: ['documents'], exact: false })
+      .forEach(({ queryKey }) => {
+        queryClient.setQueryData(queryKey, (oldDocs: Document[] = []) =>
+          Array.isArray(oldDocs)
+            ? oldDocs.map(doc => doc.id === updatedDoc.id ? updatedDoc : doc)
+            : oldDocs
+        );
+      });
+    },
+    onError: (error: Error) => {
+      alert(`Failed to update status: ${error.message}`);
+    }
+  });
+
   const handleStageAction = (stage: string, action: string) => {
     console.log(`Handling action: ${action} for stage: ${stage}`);
     
@@ -419,9 +443,13 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
         handleReprocess();
         break;
       case "start-parse":
+        startStageMutation.mutate({ stage: 'parse' });
+        break;
       case "start-chunk":
+        startStageMutation.mutate({ stage: 'chunk' });
+        break;
       case "start-index":
-        handleRestart(stage);
+        startStageMutation.mutate({ stage: 'index' });
         break;
       case "view-error":
         setErrorModal({ isOpen: true, error: getStageInfo(stage)?.error, stage: stage });
@@ -445,8 +473,9 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
         setIsPipelineModalOpen(true);
         break;
       case "refresh-status":
-        queryClient.invalidateQueries({ queryKey: ['documents', document.id] });
-        queryClient.invalidateQueries({ queryKey: ['documents'] });
+        updateStatusMutation.mutate(undefined, {
+          //onSuccess: () => queryClient.invalidateQueries({ queryKey: ['documents'] })
+        });
         break;
       default:
         console.warn(`Unknown action: ${action}`);
@@ -458,12 +487,15 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
     
     const stages = document.status.stages;
     
+    // Handle known stages
     switch (stage) {
       case "upload": return stages.upload;
       case "parse": return stages.parse;
       case "chunk": return stages.chunk;
       case "index": return stages.index;
-      default: return null;
+      default: 
+        // Handle dynamic stages from availableStages
+        return (stages as any)[stage] || null;
     }
   };
 
@@ -491,13 +523,7 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
   };
 
   const handleRestart = (stage: string) => {
-    if (stage === "parse") {
-      startStageMutation.mutate({ stage: 'parse' });
-    } else if (stage === "chunk") {
-      startStageMutation.mutate({ stage: 'chunk' });
-    } else if (stage === "index") {
-      startStageMutation.mutate({ stage: 'index' });
-    }
+      startStageMutation.mutate({ stage: stage });
   };
 
   if (!document || !document.status) {
@@ -519,6 +545,7 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
 
   const stages = document.status.stages;
 
+  console.log('variant', variant);
   if (variant === 'full') {
     return (
       <div className={className}>
@@ -530,9 +557,28 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
             Overall Status: {getOverallStatus(document.status)}
           </div>
         </div>
-        
+
         <div className="flex space-x-4 items-start">
-          <StageDropdown
+          {/* Dynamic stages from availableStages */}
+          {availableStages && Object.entries(availableStages).map(([stageName, stageInfo]) => {
+            // Check if this stage has a delete action based on stage name
+            const hasDeleteAction = stageName === "upload";
+            
+            return (
+              <StageDropdown 
+                key={stageName}
+                stage={stageName}
+                stageInfo={getStageInfo(stageName) || { status: "waiting" }}
+                onAction={(action) => handleStageAction(stageName, action)} 
+                isLoading={startStageMutation.isPending || (hasDeleteAction && deleteMutation.isPending)} 
+                size="large" 
+                document={document} 
+              />
+            );
+          })}
+          
+          {/* Static fallback stages */}
+          {/* <StageDropdown
             stage="upload"
             stageInfo={stages.upload}
             onAction={(action) => handleStageAction("upload", action)}
@@ -566,7 +612,7 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
             isLoading={startStageMutation.isPending}
             size="large"
             document={document}
-          />
+          /> */}
         </div>
 
         <ErrorModal
@@ -593,7 +639,23 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
   return (
     <div className={className}>
       <div className="flex items-center space-x-3">
-        <StageDropdown
+      {availableStages && Object.entries(availableStages).map(([stageName, stageInfo]) => {
+        // Check if this stage has a delete action based on stage name
+        const hasDeleteAction = stageName === "upload";
+        
+        return (
+          <StageDropdown 
+            key={stageName}
+            stage={stageName}
+            stageInfo={getStageInfo(stageName) || { status: "waiting" }}
+            onAction={(action) => handleStageAction(stageName, action)} 
+            isLoading={startStageMutation.isPending || (hasDeleteAction && deleteMutation.isPending)} 
+            size="large" 
+            document={document} 
+          />
+        );
+      })}
+        {/* <StageDropdown
           stage="upload"
           stageInfo={stages.upload}
           onAction={(action) => handleStageAction("upload", action)}
@@ -623,7 +685,7 @@ export const DocumentStagesControl: React.FC<DocumentStagesControlProps> = ({
           onAction={(action) => handleStageAction("index", action)}
           isLoading={startStageMutation.isPending}
           document={document}
-        />
+        /> */}
       </div>
 
       <ErrorModal

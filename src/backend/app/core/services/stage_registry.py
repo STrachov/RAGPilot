@@ -4,16 +4,14 @@ Manages registration and execution of pipeline stages
 """
 
 import asyncio
-import logging
 from typing import Dict, Any, Optional, Callable, List
 from datetime import datetime, timezone
 from sqlmodel import Session
-
 from app.core.models.document import Document
-from app.core.models.pipeline import PipelineStage, StageResult, StageStatus
+from app.core.models.pipeline import PipelineStage, PipelineStageResult, PipelineStageStatus
+
 from app.core.logger import app_logger as logger
 import uuid
-from app.core.config.pipelines import predefined_pipelines
 
 class StageFunction:
     """Wrapper for stage execution functions"""
@@ -37,7 +35,6 @@ class StageRegistry:
     
     def __init__(self):
         self._stages: Dict[str, StageFunction] = {}
-        self._initialized = False
     
     def register_stage(
         self, 
@@ -77,29 +74,31 @@ class StageRegistry:
         document: Document,
         session: Session,
         context: Dict[str, Any] = None
-    ) -> StageResult:
+    ) -> PipelineStageResult:
         """Execute a registered stage with error handling and timing"""
         start_time = datetime.now(timezone.utc)
         context = context or {}
         previous_stage_name = stage.dependencies[0] if stage.dependencies else None
-        previous_stage = document.status_dict.get("stages", {}).get(previous_stage_name, None)
+        
+        # Safely get previous stage ID, handling None case
+        previous_stage_id = None
+        if previous_stage_name:
+            stages_dict = document.status_dict.get("stages", {})
+            previous_stage_data = stages_dict.get(previous_stage_name)
+            if previous_stage_data:
+                previous_stage_id = previous_stage_data.get("stage_id")
+        
+        logger.info(f"Previous stage name: {previous_stage_name}")       
 
-        generic_kwargs: Dict[str, Any] = {
-            "pipeline_name": context.get("pipeline_name"),
-            "stage_name": stage.name,
-            "started_at": start_time.isoformat(),
-            "config": stage.config,
-            "execution_id": context.get("execution_id"),
-            "stage_id": str(uuid.uuid4()),
-            "previous_stage_id": previous_stage.stage_id,
-        }
+        stage_func = self.get_stage(stage.function_name)
+        if not stage_func:
+            raise ValueError(f"Stage function '{stage.function_name}' is not registered")
+        
+        # Get timeout configuration early
+        timeout = stage.timeout_seconds or stage_func.timeout_seconds
+        
         try:
             logger.info(f"Executing stage '{stage.name}' for document {document.id}")
-            
-            # Check if stage is registered
-            stage_func = self.get_stage(stage.function_name)
-            if not stage_func:
-                raise ValueError(f"Stage function '{stage.function_name}' is not registered")
             
             # Prepare execution context
             execution_config = {**stage.config}
@@ -108,43 +107,92 @@ class StageRegistry:
                 execution_config["previous_results"] = context.get("previous_results", {})
             
             # Execute stage with timeout if specified
-            timeout = stage.timeout_seconds or stage_func.timeout_seconds
             logger.info(f"Stage '{stage.name}' starting ...")
             if timeout:
-                result = await asyncio.wait_for(
+                results = await asyncio.wait_for(
                     stage_func.func(document, session, execution_config),
                     timeout=timeout
                 )
             else:
-                result = await stage_func.func(document, session, execution_config)
+                results = await stage_func.func(document, session, execution_config)
                 
-            result_kwargs = result.model_dump()
-            logger.info(f"Stage '{stage.name}' started successfully with result: {str(result_kwargs)}")
-            return StageResult(
-                **generic_kwargs,
-                **result_kwargs
+            if "status" in results and results["status"] == PipelineStageStatus.RUNNING.value:
+                logger.info(f"Stage '{stage.name}' started successfully with result: {str(results)}")
+            else:
+                logger.error(f"Stage '{stage.name}' failed with result: {str(results)}")
+
+            return PipelineStageResult(
+                started_at=start_time.isoformat(),
+                status=results["status"],
+                finished_at=datetime.now(timezone.utc).isoformat(),
+                result=results["result"],
+                error_message=results["error_message"]
             )
-            
             
         except asyncio.TimeoutError:
             error_msg = f"Stage '{stage.name}' timed out after {timeout} seconds"
             logger.error(error_msg)
-            return StageResult(
-                **generic_kwargs,
-                status=StageStatus.FAILED,
+            return PipelineStageResult(
+                started_at=start_time.isoformat(),
+                status=PipelineStageStatus.FAILED.value,
+                finished_at=datetime.now(timezone.utc).isoformat(),
                 error_message=error_msg,
+                result=None
             )
             
         except Exception as e:
             error_msg = f"Stage '{stage.name}' failed: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            return StageResult(
-                **generic_kwargs,
-                status=StageStatus.FAILED,
+            return PipelineStageResult(
+                started_at=start_time.isoformat(),
+                status=PipelineStageStatus.FAILED.value,
+                finished_at=datetime.now(timezone.utc).isoformat(),
                 error_message=error_msg,
+                result=None
             )
 
-    
+    # async def _update_document_stage_status(
+    #     self,
+    #     document: Document,
+    #     session: Session,
+    #     stage_name: str,
+    #     status: Optional[str] = None,
+    #     execution_id: Optional[str] = None,
+    #     result_data: Optional[Dict[str, Any]] = None
+    # ) -> None:
+    #     """Update the document's stage status"""
+    #     try:
+    #         status_dict = document.status_dict
+    #         stages = status_dict.get("stages", {})
+            
+    #         if stage_name not in stages:
+    #             stages[stage_name] = {}
+            
+    #         stages[stage_name]["status"] = status
+    #         if status == "running":
+    #             stages[stage_name]["started_at"] = datetime.now(timezone.utc).isoformat()
+    #             stages[stage_name]["attempts"] = stages[stage_name].get("attempts", 0) + 1
+    #             if execution_id:
+    #                 stages[stage_name]["execution_id"] = execution_id
+    #         elif status == "completed":
+    #             stages[stage_name]["finished_at"] = datetime.now(timezone.utc).isoformat()
+    #             if result_data:
+    #                 stages[stage_name]["result"] = result_data
+    #         elif status == "failed":
+    #             stages[stage_name]["failed_at"] = datetime.now(timezone.utc).isoformat()
+    #             if result_data and "error_message" in result_data:
+    #                 stages[stage_name]["error_message"] = result_data["error_message"]
+            
+    #         status_dict["stages"] = stages
+    #         document.status_dict = status_dict
+    #         document.updated_at = datetime.now(timezone.utc)
+            
+    #         session.add(document)
+    #         session.commit()
+            
+    #     except Exception as e:
+    #         logger.error(f"Failed to update document stage status: {e}")
+
     def validate_dependencies(self, stages: List[PipelineStage]) -> List[str]:
         """Validate that all stage dependencies are registered"""
         errors = []

@@ -3,7 +3,6 @@ export { DocumentStatusChart } from './DocumentStatusChart';
 export { RecentDocuments } from './RecentDocuments';
 export { SystemStatsCard } from './SystemStatsCard';
 export { QuickActions } from './QuickActions';
-export { ParserSelectionModal } from './ParserSelectionModal';
 export { DocumentActionsDropdown } from './DocumentActionsDropdown';
 export { GlobalConfigModal } from './GlobalConfigModal';
 export { DocumentAnalysisStatus } from './DocumentAnalysisStatus';

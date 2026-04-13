@@ -16,8 +16,7 @@ export interface User {
 export interface DocumentStageInfo {
   status: "waiting" | "running" | "completed" | "failed";
   started_at?: string;
-  completed_at?: string;
-  failed_at?: string;
+  finished_at?: string;
   error_message?: string;
   attempts?: number;
   config?: Record<string, unknown>;
@@ -199,8 +198,7 @@ export enum StageStatus {
 export interface ProcessingStageInfo {
   status: StageStatus;
   started_at?: string;
-  completed_at?: string;
-  failed_at?: string;
+  finished_at?: string;
   error_message?: string;
   attempts?: number;
   config_overrides?: Record<string, unknown>;
@@ -380,6 +378,7 @@ export interface PipelineStageInfo {
 
 export interface Pipeline {
   name: string;
+  title: string;
   description: string;
   stages: PipelineStageInfo[];
   allow_parallel: boolean;
@@ -400,7 +399,7 @@ export interface ParseConfig {
 }
 
 export interface GlobalConfig {
-  default_pipeline_name: string;
+  pipeline_name: string;
   parse_config: ParseConfig;
   chunk_config: ChunkingConfig;
   index_config: IndexConfig;

@@ -15,7 +15,7 @@ from app.core.config.settings import settings
 class LogConfig(BaseModel):
     """Logging configuration"""
     LOG_LEVEL: str = "INFO"
-    LOG_FORMAT: str = "%(asctime)s | %(levelname)s | %(message)s | [%(name)s:%(lineno)d]"
+    LOG_FORMAT: str = "%(asctime)s | %(levelname)s | %(message)s | %(filename)s:%(funcName)s:%(lineno)d "
     LOG_DATE_FORMAT: str = "%Y-%m-%d %H:%M:%S"
     LOG_DIR: str = "logs"
     LOG_FILE_MAX_BYTES: int = 10 * 1024 * 1024  # 10 MB

@@ -1,5 +1,7 @@
 import { apiClient, fileUploadClient, API_ENDPOINTS } from '@/lib/api';
-import { Document, DocumentChunk, DocumentSourceType, DocumentStagesResponse, Pipeline, PipelineExecution, PipelineStageStatus } from '@/types/ragpilot';
+import { Document, DocumentChunk, DocumentSourceType, 
+  DocumentStagesResponse, Pipeline, PipelineExecution,
+  PipelineStageStatus, PipelineStageInfo } from '@/types/ragpilot';
 
 export interface UploadDocumentRequest {
   file: File;
@@ -215,7 +217,7 @@ export const documentsService = {
   // Start or retry a specific processing stage
   async startDocumentStage(
     id: string, 
-    stage: 'parse' | 'chunk' | 'index',
+    stage: string, //'parse' | 'chunk' | 'index',
     configOverrides?: Record<string, unknown>
   ): Promise<{ message: string; stages: any }> {
     const { data } = await apiClient.post(`/documents/${id}/stages/${stage}/start`, {
@@ -227,12 +229,12 @@ export const documentsService = {
   // Get error details for a failed stage
   async getStageError(
     id: string, 
-    stage: 'upload' | 'parse' | 'chunk' | 'index'
+    stage: string //'upload' | 'parse' | 'chunk' | 'index'
   ): Promise<{
     document_id: string;
     stage: string;
     error_message: string;
-    failed_at: string;
+    finished_at: string;
     attempts: number;
     config: Record<string, unknown>;
   }> {
@@ -283,14 +285,19 @@ export const documentsService = {
     const { data } = await apiClient.get(API_ENDPOINTS.DOCUMENTS.QUALITY_METRICS(id));
     return data;
   },
-
+  // PARSE RESULTS outpu fields:
+  // "document_id": "1c6eedece09076be19a313df329ace357a3faf3cbc7129ca4659df4e52a06bd3",
+  // "result":  ("stage_type", "parser_name", "parser_version","task_id", "result_key", "table_keys": []),     
+  // "status": "completed",
+  // "finished_at": "2025-07-24T17:08:11.130099Z",
+  // "started_at": "2025-07-24T14:08:02.360602+00:00Z",
   // Get parse results with RAGParser response data
   async getParseResults(id: string): Promise<{
     document_id: string;
-    parse_result: Record<string, any>;
-    status: string;
-    completed_at?: string;
-    parser_type: string;
+    metadata: Record<string, any>;
+    status: Record<string, any>;
+    finished_at?: string;
+    started_at?: string;
   }> {
     const { data } = await apiClient.get(API_ENDPOINTS.DOCUMENTS.PARSE_RESULTS(id));
     return data;
@@ -323,7 +330,7 @@ export const documentsService = {
   /**
    * Get information about all available stages
    */
-  async getAvailableStages(): Promise<Record<string, PipelineStageStatus>> {
+  async getAvailableStages(): Promise<Record<string, PipelineStageInfo>> {
     const { data } = await apiClient.get(API_ENDPOINTS.PIPELINES.STAGES);
     return data;
   },

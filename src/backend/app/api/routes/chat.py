@@ -86,7 +86,7 @@ async def submit_query(
         
         # 4. Update query status
         query.status = QueryStatus.COMPLETED
-        query.completed_at = datetime.now(timezone.utc)
+        query.finished_at = datetime.now(timezone.utc)
         session.add(query)
         session.commit()
         session.refresh(response)

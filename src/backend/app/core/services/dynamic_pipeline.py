@@ -12,7 +12,7 @@ from app.core.models.pipeline import Pipeline, PipelineStage, PipelineStageType,
 from app.core.services.stage_registry import stage_registry
 from app.core.services.pipeline_executor import pipeline_executor
 from app.core.services.document_stages import DocumentStages
-from app.core.config.pipelines import predefined_pipelines
+from app.core.config.pipelines import predefined_pipelines, predefined_stages
 from app.core.logger import app_logger as logger
 
 
@@ -26,50 +26,51 @@ class DynamicPipelineService:
     
     def _register_stages(self) -> None:
         """Register all available pipeline stages"""
-        
+        logger.info(f"Registering {len(predefined_stages)} stages")      
+        for stage in predefined_stages.values():
+            logger.info(f"Predefined stage: {stage}")
+            stage_registry.register_stage(
+                name=stage.function_name,
+                func=getattr(self.document_stages, stage.function_name),
+                dependencies=stage.dependencies,
+                description=stage.description,
+                timeout_seconds=stage.timeout_seconds or 0
+            )
         # Register parse stage
-        stage_registry.register_stage(
-            name="parse_stage",
-            func=self.document_stages.parse_stage,
-            description="Parse document using RAGParser",
-            timeout_seconds=1800  # 30 minutes
-        )
+        # stage_registry.register_stage(
+        #     name="parse_stage",
+        #     func=self.document_stages.parse_stage,
+        #     #dependencies=["upload"],
+        #     description="Parse document using RAGParser",
+        #     timeout_seconds=1800  # 30 minutes
+        # )
         
-        # Register chunk stage
-        stage_registry.register_stage(
-            name="chunk_stage",
-            func=self.document_stages.chunk_stage,
-            dependencies=["parse"],
-            description="Split document into chunks",
-            timeout_seconds=600  # 10 minutes
-        )
+        # # Register chunk stage
+        # stage_registry.register_stage(
+        #     name="chunk_stage",
+        #     func=self.document_stages.chunk_stage,
+        #     dependencies=["parse"],
+        #     description="Split document into chunks",
+        #     timeout_seconds=600  # 10 minutes
+        # )
         
-        # Register index stage
-        stage_registry.register_stage(
-            name="index_stage",
-            func=self.document_stages.index_stage,
-            dependencies=["chunk"],
-            description="Index document chunks for retrieval",
-            timeout_seconds=900  # 15 minutes
-        )
-        # TODO: Delete thee chunk_index stage
-        # Register combined chunk+index stage
-        stage_registry.register_stage(
-            name="chunk_index_stage",
-            func=self.document_stages.chunk_index_stage,
-            dependencies=["parse"],
-            description="Combined chunking and indexing",
-            timeout_seconds=1200  # 20 minutes
-        )
+        # # Register index stage
+        # stage_registry.register_stage(
+        #     name="index_stage",
+        #     func=self.document_stages.index_stage,
+        #     dependencies=["chunk"],
+        #     description="Index document chunks for retrieval",
+        #     timeout_seconds=900  # 15 minutes
+        # )
         
-        # Register graph creation stage
-        stage_registry.register_stage(
-            name="create_graph_stage",
-            func=self.document_stages.create_graph_stage,
-            dependencies=["chunk"],
-            description="Create knowledge graph from document",
-            timeout_seconds=1800  # 30 minutes
-        )
+        # # Register graph creation stage
+        # stage_registry.register_stage(
+        #     name="create_graph_stage",
+        #     func=self.document_stages.create_graph_stage,
+        #     dependencies=["chunk"],
+        #     description="Create knowledge graph from document",
+        #     timeout_seconds=1800  # 30 minutes
+        # )
         
         logger.info(f"Registered {len(stage_registry.list_stages())} stages")
     
@@ -163,7 +164,10 @@ class DynamicPipelineService:
     def get_available_stages(self) -> Dict[str, Dict[str, Any]]:
         """Get information about all available stages"""
         self.initialize()
-        return stage_registry.get_stage_info()
+        from app.core.services.config_service import config_service
+        pipeline_name = config_service.get_global_config().pipeline_name
+        return self.predefined_pipelines[pipeline_name].stages
+        #return stage_registry.get_stage_info()
 
     async def continue_pipeline(
         self,
@@ -195,7 +199,7 @@ class DynamicPipelineService:
                     for execution in stage_data["executions"]:
                         if execution.get("stage_execution_id") == stage_execution_id:
                             execution["status"] = result.get("status", "completed")
-                            execution["completed_at"] = datetime.now(timezone.utc).isoformat()
+                            execution["finished_at"] = datetime.now(timezone.utc).isoformat()
                             execution["result"] = result
                             completed_stage_name = stage_name
                             # Update top-level stage status

@@ -33,9 +33,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         start_time = time.time()
         
         # Collect request data
-        request_data = await self._get_request_data(request)
+        #request_data = await self._get_request_data(request)
         api_logger.info(
-            f"Request {request_id}: {request.method} {request.url.path} - "
+            f"Request: {request.method} {request.url.path} - "
             f"Client: {request.client.host if request.client else 'unknown'}"
         )
         
@@ -50,7 +50,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             # Log response information
             status_code = response.status_code
             api_logger.info(
-                f"Response {request_id}: {request.method} {request.url.path} - "
+                f"Response: {request.method} {request.url.path} - "
                 f"Status: {status_code} - Time: {process_time:.4f}s"
             )
             

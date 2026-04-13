@@ -72,7 +72,7 @@ class PipelineProcessor:
                         stages[stage_name] = {
                             **stages.get(stage_name, {}),
                             "status": "failed",
-                            "failed_at": datetime.now(timezone.utc).isoformat(),
+                            "finished_at": datetime.now(timezone.utc).isoformat(),
                             "error_message": str(e)
                         }
                         status_dict["stages"] = stages
@@ -144,7 +144,7 @@ class PipelineProcessor:
             metadata = document.metadata_dict or {}
             metadata.update({
                 "pipeline_error": str(e),
-                "failed_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
                 "failed_stage": "parsing_submission"
             })
             document.metadata_dict = metadata
@@ -175,9 +175,9 @@ class PipelineProcessor:
                 "execution_id": execution.execution_id,
                 "pipeline_name": execution.pipeline_name,
                 "document_id": execution.document_id,
-                "status": "completed" if execution.completed_at and not execution.error_message else "failed",
+                "status": "completed" if execution.finished_at and not execution.error_message else "failed",
                 "started_at": execution.started_at,
-                "completed_at": execution.completed_at,
+                "finished_at": execution.finished_at,
                 "current_stage": execution.current_stage,
                 "failed_stage": execution.failed_stage,
                 "error_message": execution.error_message,
@@ -245,7 +245,7 @@ class PipelineProcessor:
                 # Parsing failed
                 document.status = DocumentStatus.FAILED
                 metadata.update({
-                    "failed_at": getattr(status, "failed_at", datetime.now(timezone.utc).isoformat()),
+                    "finished_at": getattr(status, "finished_at", datetime.now(timezone.utc).isoformat()),
                     "failed_stage": "parsing",
                     "ragparser_error": status.error
                 })
@@ -274,7 +274,7 @@ class PipelineProcessor:
             document.status = DocumentStatus.FAILED
             metadata = document.metadata_dict or {}
             metadata.update({
-                "failed_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
                 "failed_stage": "status_check",
                 "status_check_error": str(e)
             })
@@ -342,7 +342,7 @@ class PipelineProcessor:
             document.status = DocumentStatus.FAILED
             metadata = document.metadata_dict or {}
             metadata.update({
-                "failed_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
                 "failed_stage": "chunking",
                 "processing_error": str(e)
             })

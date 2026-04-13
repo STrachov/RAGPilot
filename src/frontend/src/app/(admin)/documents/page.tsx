@@ -16,6 +16,8 @@ import { documentsService } from "@/services/documents";
 import { adminService } from "@/services/admin";
 import { useDocumentStatusPolling } from "@/hooks/useDocumentStatusPolling";
 
+// ...
+
 
 
 const formatFileSize = (bytes: number): string => {
@@ -118,7 +120,7 @@ export default function DocumentsPage() {
   const currentPageDocumentIds = useMemo(() => {
     return filteredDocuments.map(doc => doc.id);
   }, [filteredDocuments.map(doc => doc.id).join(',')]);
-
+  
   // Poll status for documents on current page with running parse stages
   const { data: updatedDocuments } = useDocumentStatusPolling(currentPageDocumentIds, {
     enabled: currentPageDocumentIds.length > 0,
@@ -146,6 +148,31 @@ export default function DocumentsPage() {
     processing: documents?.filter(d => getOverallStatus(d.status) === 'processing').length || 0,
     pending: documents?.filter(d => getOverallStatus(d.status) === 'pending').length || 0,
     failed: documents?.filter(d => getOverallStatus(d.status) === 'failed').length || 0,
+  };
+
+  // Update all statuses for all visible documents
+  const handleUpdateAllStatuses = async () => {
+    // Fetch updated statuses in parallel
+    const results = await Promise.allSettled(
+      currentPageDocumentIds.map(id => documentsService.updateDocumentStatus(id))
+    );
+
+    // For each successful update, update all relevant queries in the cache
+    results.forEach(result => {
+      if (result.status === "fulfilled") {
+        const updatedDoc = result.value;
+        queryClient
+          .getQueryCache()
+          .findAll({ queryKey: ['documents'], exact: false })
+          .forEach(({ queryKey }) => {
+            queryClient.setQueryData(queryKey, (oldDocs: Document[] = []) =>
+              Array.isArray(oldDocs)
+                ? oldDocs.map(doc => doc.id === updatedDoc.id ? updatedDoc : doc)
+                : oldDocs
+            );
+          });
+      }
+    });
   };
 
   const handleUploadSuccess = (document: Document) => {
@@ -295,15 +322,15 @@ export default function DocumentsPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
-            Global Settings
+            Processing Settings
           </button>
-          <button
+          {/* <button
             onClick={handleBulkPipelineProcess}
             disabled={selectedDocuments.length === 0}
             className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             Process with Pipeline
-          </button>
+          </button> */}
           <button
             onClick={() => setIsUploadModalOpen(true)}
             className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700"
@@ -470,6 +497,21 @@ export default function DocumentsPage() {
 
           {/* Status Filter and Bulk Actions */}
           <div className="flex items-center space-x-4">
+            <button
+              onClick={handleUpdateAllStatuses}
+              className="flex items-center justify-center rounded-md bg-white border border-gray-300 dark:bg-gray-700 dark:border-gray-600 p-2 hover:bg-gray-100 dark:hover:bg-gray-600 transition"
+              title="Update status for all visible documents"
+              aria-label="Update status for all visible documents"
+            >
+              <svg className="h-5 w-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                />
+              </svg>
+            </button>
             <select
               value={selectedStatus}
               onChange={(e) => setSelectedStatus(e.target.value)}
@@ -502,9 +544,9 @@ export default function DocumentsPage() {
                   <option value="" disabled>
                     Actions for {selectedDocuments.length} selected
                   </option>
-                  <option value="download">Download Selected</option>
-                  <option value="reprocess">Reprocess Selected</option>
-                  <option value="delete">Delete Selected</option>
+                  <option value="download">Download</option>
+                  <option value="reprocess">Apply Pipeline</option>
+                  <option value="delete">Delete</option>
                 </select>
               </div>
             )}

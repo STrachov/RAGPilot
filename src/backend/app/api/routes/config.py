@@ -28,7 +28,8 @@ async def get_global_config(
         return {
             "parse_config": global_config.parse_config.model_dump(),
             "chunk_config": global_config.chunk_config.model_dump(),
-            "index_config": global_config.index_config.model_dump()
+            "index_config": global_config.index_config.model_dump(),
+            "pipeline_name": global_config.pipeline_name
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get global configuration: {str(e)}")
@@ -52,6 +53,26 @@ async def update_global_config(
         return {"message": "Global configuration updated successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update global configuration: {str(e)}")
+
+@router.get("/current_pipeline_stages", response_model=Dict[str, Any])
+async def get_current_pipeline_stages(
+    current_user: User = Depends(get_current_admin)
+) -> Dict[str, Any]:
+    """
+    Get the current pipeline stages
+    
+    Returns:
+        Dict containing current pipeline stages
+    """
+    try:
+        global_config = config_service.get_global_config()
+        from app.core.config.pipelines import predefined_pipelines
+        pipeline_stages = predefined_pipelines[global_config.pipeline_name].stages
+        return {
+            "pipeline_stages": pipeline_stages
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get current pipeline stages: {str(e)}")
 
 @router.get("/parse", response_model=Dict[str, Any])
 async def get_parse_config(

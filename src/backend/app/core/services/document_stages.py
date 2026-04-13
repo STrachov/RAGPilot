@@ -10,8 +10,9 @@ from app.core.models.document import Document, DocumentChunk, DocumentStageInfo
 from app.core.services.s3 import s3_service
 from app.core.services.ragparser_client import ragparser_client
 from app.core.config.settings import settings
-from app.core.services.stage_registry import StageStatus
+from app.core.models.pipeline import PipelineStageStatus
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from app.core.models.pipeline import ParseStageResult
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +25,10 @@ class DocumentStages:
         document: Document, 
         session: Session,
         config: Optional[Dict[str, Any]] = None,
-        context: Optional[Dict[str, Any]] = None
+        #context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Handle document parsing via RAGParser"""
+        context = config.get("context", {})
         try:
             start_time = datetime.now(timezone.utc)
             execution_id = context.get("execution_id") if context else None
@@ -65,36 +67,47 @@ class DocumentStages:
             parser_options.pop("context", None)
             parser_options.pop("previous_results", None)
 
-            # Submit document to RAGParser
-            ragparser_response = await ragparser_client.submit_document_for_parsing(
-                document_url=document_url,
-                options={
+            request_options = {
+                "document_url": document_url,
+                "options": {
                     "document_id": str(document.id),
                     "filename": document.filename,
                     "content_type": document.content_type,
                     **parser_options
                 },
-                callback_url=callback_url,
-                callback_payload=callback_payload,
-            )
+                "callback_url": callback_url,
+                "callback_payload": callback_payload,
+            }
+
+            logger.info(f"Submitting document to RAGParser with options: {request_options}")
+
+            # Submit document to RAGParser
+            ragparser_response = await ragparser_client.submit_document_for_parsing(**request_options)
                         
             logger.info(f"Document {document.id} submitted to RAGParser with task_id: {ragparser_response.task_id}")
             
-            return DocumentStageInfo(
-                status= StageStatus.RUNNING,
-                ragparser_task_id=ragparser_response.task_id,
-                queue_position=ragparser_response.queue_position,
-                config=parse_config,
+            parse_result = ParseStageResult(
+                stage_type="parse",
+                parser_name="ragparser",
+                parser_version=None,
+                task_id=ragparser_response.task_id,
+                queue_position=None,
             )
+            return {
+                "status": PipelineStageStatus.RUNNING.value,
+                "result": parse_result.model_dump(),
+                #"config": parse_config,
+                "error_message": None,
+            }
             
         except Exception as e:
             logger.error(f"Parse stage failed for document {document.id}: {e}")
             
-            return DocumentStageInfo(
-                status=StageStatus.FAILED,
-                failed_at=datetime.now(timezone.utc).isoformat(),
-                error_message=str(e),
-            )   
+            return {
+                "status": PipelineStageStatus.FAILED.value,
+                "error_message": str(e),
+                "result": None,
+            }   
          
     async def chunk_stage(
         self, 
@@ -139,7 +152,7 @@ class DocumentStages:
             stages["chunk"] = {
                 **stages.get("chunk", {}),
                 "status": "completed",
-                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
                 "chunks_created": len(chunks),
                 "attempts": stages.get("chunk", {}).get("attempts", 0) + 1
             }
@@ -160,7 +173,7 @@ class DocumentStages:
             stages["chunk"] = {
                 **stages.get("chunk", {}),
                 "status": "failed",
-                "failed_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
                 "error_message": str(e),
                 "attempts": stages.get("chunk", {}).get("attempts", 0) + 1
             }
@@ -196,7 +209,7 @@ class DocumentStages:
             stages["index"] = {
                 **stages.get("index", {}),
                 "status": "completed",
-                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
                 "chunks_indexed": len(chunks),
                 "attempts": stages.get("index", {}).get("attempts", 0) + 1
             }
@@ -217,7 +230,7 @@ class DocumentStages:
             stages["index"] = {
                 **stages.get("index", {}),
                 "status": "failed",
-                "failed_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
                 "error_message": str(e),
                 "attempts": stages.get("index", {}).get("attempts", 0) + 1
             }
@@ -269,7 +282,7 @@ class DocumentStages:
             stages = status_dict.get("stages", {})
             stages["create_graph"] = {
                 "status": "completed",
-                "completed_at": datetime.now(timezone.utc).isoformat()
+                "finished_at": datetime.now(timezone.utc).isoformat()
             }
             status_dict["stages"] = stages
             document.status_dict = status_dict

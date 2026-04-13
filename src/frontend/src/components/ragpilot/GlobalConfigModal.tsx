@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { configService } from "@/services/config";
 import { documentsService } from "@/services/documents";
-import { GlobalConfig, ParseConfig, ChunkingConfig, IndexConfig, ChunkingStrategy, IndexType, Pipeline, PipelineInfo } from "@/types/ragpilot";
+import { GlobalConfig, ParseConfig, ChunkingConfig, IndexConfig, ChunkingStrategy, IndexType, Pipeline} from "@/types/ragpilot";
 
 interface GlobalConfigModalProps {
   isOpen: boolean;
@@ -14,7 +14,7 @@ interface GlobalConfigModalProps {
 
 export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
   isOpen,
-  onClose
+  onClose,
 }) => {
   const [config, setConfig] = useState<GlobalConfig | null>(null);
   const queryClient = useQueryClient();
@@ -45,6 +45,8 @@ export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
     mutationFn: (newConfig: GlobalConfig) => configService.updateGlobalConfig(newConfig),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['globalConfig'] });
+      // Invalidate available stages so DocumentStagesControl components refresh
+      queryClient.invalidateQueries({ queryKey: ['availableStages'] });
       alert('Global configuration updated successfully!');
       onClose();
     },
@@ -139,20 +141,20 @@ export const GlobalConfigModal: React.FC<GlobalConfigModalProps> = ({
                     Default Pipeline for Uploads
                   </label>
                   <div className="space-y-3">
-                    {availablePipelines && Object.values(availablePipelines).map((pipeline: PipelineInfo) => (
+                    {availablePipelines && Object.values(availablePipelines).map((pipeline: Pipeline) => (
                       <div key={pipeline.name} className="flex items-start p-3 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50">
                         <input
                           id={`pipeline-${pipeline.name}`}
                           type="radio"
                           name="default_pipeline"
                           value={pipeline.name}
-                          checked={config.default_pipeline_name === pipeline.name}
-                          onChange={(e) => updateConfigField('default_pipeline_name', e.target.value)}
+                          checked={config.pipeline_name === pipeline.name}
+                          onChange={(e) => updateConfigField('pipeline_name', e.target.value)}
                           className="h-4 w-4 mt-1 text-blue-600 focus:ring-blue-500 border-gray-300"
                         />
                         <div className="ml-3 text-sm">
                           <label htmlFor={`pipeline-${pipeline.name}`} className="font-medium text-gray-900 dark:text-white">
-                            {pipeline.name}
+                            {pipeline.title}
                           </label>
                           <p className="text-gray-500 dark:text-gray-400">
                             {pipeline.description}

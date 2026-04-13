@@ -39,7 +39,7 @@ class Query(SQLModel, table=True):
     session_id: Optional[str] = Field(default=None, sa_column=Column(String(100), nullable=True))
     status: str = Field(default=QueryStatus.PENDING.value, sa_column=Column(String(50)))
     created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime))
-    completed_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime, nullable=True))
+    finished_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime, nullable=True))
     
     # Relationships
     user: Optional[User_type] = Relationship(sa_relationship_kwargs={

@@ -1,28 +1,45 @@
 from enum import Enum
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
-from app.core.config.constants import StageStatus, PipelineStageType
-from app.core.models.document import DocumentStageInfo
+from typing import Literal, Union, Annotated
 
+
+
+class PipelineStageStatus(str, Enum):
+    """Status of individual processing stages"""
+    WAITING = "waiting"     # Stage is waiting to be started
+    RUNNING = "running"     # Stage is currently processing
+    COMPLETED = "completed" # Stage completed successfully
+    FAILED = "failed"       # Stage failed with error
+    #SKIPPED = "skipped"     # Stage was skipped (e.g., already completed)
+
+class PipelineStageType(str, Enum):
+    """Types of pipeline stages"""
+    PARSE = "parse"
+    CHUNK = "chunk"
+    INDEX = "index"
+    UPLOAD = "upload"
 
 class PipelineStage(BaseModel):
     """Definition of a single pipeline stage"""
     name: str = Field(..., description="Unique name for this stage")
     stage_type: PipelineStageType = Field(..., description="Type of stage")
+    stage_id: Optional[str] = Field(default=None, description="Unique ID for this stage")
     function_name: str = Field(..., description="Method name to execute for this stage")
     config: Dict[str, Any] = Field(default_factory=dict, description="Stage-specific configuration")
     dependencies: List[str] = Field(default_factory=list, description="List of stage names that must complete before this stage")
     optional: bool = Field(default=False, description="Whether this stage can be skipped if dependencies fail")
     retry_attempts: int = Field(default=1, description="Number of retry attempts for failed stages")
     timeout_seconds: Optional[int] = Field(default=None, description="Timeout for stage execution")
+    description: str = Field(default="", description="Description of the stage")
     
     class Config:
         use_enum_values = True
 
-
 class Pipeline(BaseModel):
     """Definition of a complete processing pipeline"""
     name: str = Field(..., description="Unique name for this pipeline")
+    title: str = Field(default="", description="Title of this pipeline")
     description: str = Field(default="", description="Description of what this pipeline does")
     version: str = Field(default="1.0", description="Pipeline version")
     stages: List[PipelineStage] = Field(..., description="Ordered list of stages in this pipeline")
@@ -74,6 +91,62 @@ class Pipeline(BaseModel):
         
         return errors
 
+class BaseStageResult(BaseModel):
+    """Base class for stage results"""
+    stage_type: str
+    stage_id: Optional[str] = None
+
+class ParseStageResult(BaseStageResult):
+    """Result of executing a parse stage"""
+    stage_type: Literal["parse"] = "parse"
+    parser_name: Optional[str] = None
+    parser_version: Optional[str] = None
+    task_id: Optional[str] = None
+    queue_position: Optional[int] = None
+    pages_processed: Optional[int] = None
+    file_size: Optional[int] = None
+    result_key: Optional[str] = None
+    table_keys: Optional[List[str]] = None
+    
+class ChunkStageResult(BaseStageResult):
+    """Result of executing a chunk stage"""
+    stage_type: Literal["chunk"] = "chunk"
+    chunk_size: Optional[int] = None
+    chunks_processed: Optional[int] = None
+    total_chunks: Optional[int] = None
+    
+class IndexStageResult(BaseStageResult):
+    """Result of executing an index stage"""
+    stage_type: Literal["index"] = "index"
+    index_name: Optional[str] = None
+    index_type: Optional[str] = None
+    index_size: Optional[int] = None
+    index_status: Optional[str] = None
+
+class UploadStageResult(BaseStageResult):
+    """Result of executing an upload stage"""
+    stage_type: Literal["upload"] = "upload"
+    file_path: Optional[str] = None
+    file_size: Optional[int] = None
+    
+PipelineStageResultType = Annotated[
+    Union[
+        UploadStageResult,
+        ParseStageResult,
+        ChunkStageResult,
+        IndexStageResult,
+        # Add new stage result classes here
+    ],
+    Field(discriminator="stage_type")
+]   
+
+class PipelineStageResult(BaseModel):
+    """Result of executing a single stage"""
+    status: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    error_message: Optional[str] = None
+    result: Optional[PipelineStageResultType] = None
 
 class PipelineExecution(BaseModel):
     """Runtime information for a pipeline execution"""
@@ -81,9 +154,9 @@ class PipelineExecution(BaseModel):
     document_id: str
     execution_id: str
     stage_results: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
-    stage_statuses: Dict[str, StageStatus] = Field(default_factory=dict)
+    stage_statuses: Dict[str, PipelineStageStatus] = Field(default_factory=dict)
     started_at: Optional[str] = None
-    completed_at: Optional[str] = None
+    finished_at: Optional[str] = None
     current_stage: Optional[str] = None
     failed_stage: Optional[str] = None
     error_message: Optional[str] = None
@@ -92,13 +165,13 @@ class PipelineExecution(BaseModel):
         """Get the result data from a completed stage"""
         return self.stage_results.get(stage_name)
     
-    def get_stage_status(self, stage_name: str) -> StageStatus:
+    def get_stage_status(self, stage_name: str) -> PipelineStageStatus:
         """Get the current status of a stage"""
-        return self.stage_statuses.get(stage_name, StageStatus.WAITING)
+        return self.stage_statuses.get(stage_name, PipelineStageStatus.WAITING)
     
     def is_stage_completed(self, stage_name: str) -> bool:
         """Check if a stage has completed successfully"""
-        return self.get_stage_status(stage_name) == StageStatus.COMPLETED
+        return self.get_stage_status(stage_name) == PipelineStageStatus.COMPLETED
     
     def are_dependencies_satisfied(self, stage: PipelineStage) -> bool:
         """Check if all dependencies for a stage are satisfied"""
@@ -107,6 +180,3 @@ class PipelineExecution(BaseModel):
                 return False
         return True
 
-class StageResult(DocumentStageInfo):
-    """Result of executing a single stage"""
-    pass
